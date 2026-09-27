@@ -1,0 +1,34 @@
+# Model inventory (SR 11-7: every model is registered with owner, use, tier and validation status)
+models:
+  - model_id: FI_PRICING
+    name: Fixed-income pricing and sensitivities
+    purpose: Curve bootstrap, bond and MBS pricing, duration, convexity, key-rate duration
+    owner: Quant Risk
+    tier: 2
+    version: 1.0.0
+    last_validation: 2026-09-15
+    next_validation: 2027-09-15
+  - model_id: MR_VAR
+    name: Market-risk VaR and Expected Shortfall
+    purpose: Daily historical, parametric and Monte Carlo VaR/ES for limit monitoring
+    owner: Market Risk
+    tier: 1
+    version: 1.0.0
+    last_validation: 2026-09-15
+    next_validation: 2027-03-15
+  - model_id: STRESS
+    name: Stress-testing engine
+    purpose: Scenario P&L for rate, curve, spread and volatility shocks
+    owner: Market Risk
+    tier: 2
+    version: 1.0.0
+    last_validation: 2026-09-15
+    next_validation: 2027-09-15
+  - model_id: PD_MODEL
+    name: Corporate PD scorecard with macro satellite
+    purpose: Obligor PD, rating grade, macro-stressed expected loss
+    owner: Credit Risk
+    tier: 1
+    version: 1.0.0
+    last_validation: 2026-09-15
+    next_validation: 2027-03-15

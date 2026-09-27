@@ -1,0 +1,61 @@
+# Stress scenarios. Rate shocks are in basis points at key tenors and are
+# interpolated linearly across the curve (flat beyond the ends).
+# Spread shocks are in bp per spread index. Vol shock is in normal-vol points.
+market_scenarios:
+  - id: PAR_UP_100
+    name: Parallel +100bp
+    description: Every point on the Treasury curve rises 100bp.
+    rates: {2: 100, 5: 100, 10: 100, 30: 100}
+  - id: PAR_DN_100
+    name: Parallel -100bp
+    description: Every point on the Treasury curve falls 100bp.
+    rates: {2: -100, 5: -100, 10: -100, 30: -100}
+  - id: PAR_UP_200
+    name: Parallel +200bp
+    description: Regulatory-style large parallel shock (IRRBB).
+    rates: {2: 200, 5: 200, 10: 200, 30: 200}
+  - id: BEAR_STEEP
+    name: Bear steepener
+    description: Long rates rise more than short rates.
+    rates: {2: 10, 5: 40, 10: 75, 30: 90}
+  - id: BEAR_FLAT
+    name: Bear flattener
+    description: Short rates rise more than long rates, as in a fast hiking cycle.
+    rates: {2: 75, 5: 40, 10: 10, 30: 0}
+  - id: BULL_FLAT
+    name: Bull flattener
+    description: Long rates fall more than short rates.
+    rates: {2: -10, 5: -40, 10: -75, 30: -90}
+  - id: SPREAD_WIDE
+    name: Credit spread widening
+    description: IG +75bp, HY +250bp, MBS +40bp. Treasuries unchanged.
+    spreads: {IG: 75, HY: 250, MBS: 40}
+  - id: VOL_UP
+    name: Volatility shock
+    description: Implied rate volatility up 25 normal-vol points.
+    vol: 25
+  - id: RISK_OFF
+    name: Risk-off (March 2020 style)
+    description: Treasuries rally, spreads blow out, volatility spikes.
+    rates: {2: -50, 5: -60, 10: -60, 30: -50}
+    spreads: {IG: 150, HY: 400, MBS: 60}
+    vol: 40
+  - id: HIST_WORST_10D
+    name: Worst 10-day window in history
+    description: Replays the worst 10-day move in the loaded market history on today's portfolio.
+    historical_replay: worst_10d
+
+# Macro scenarios for the credit module (annual peak/trough values).
+macro_scenarios:
+  - id: BASELINE
+    name: Baseline
+    unemployment: 4.3
+    gdp_growth: 1.8
+  - id: ADVERSE
+    name: Adverse
+    unemployment: 7.0
+    gdp_growth: -1.0
+  - id: SEVERE
+    name: Severely adverse
+    unemployment: 10.0
+    gdp_growth: -3.5

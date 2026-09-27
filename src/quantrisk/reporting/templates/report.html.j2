@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>QuantRisk Daily Report {{ as_of }}</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root{--bg:#F3F5F8;--surface:#FFFFFF;--surface2:#EAEEF3;--ink:#122033;--muted:#566476;--line:#D6DDE6;--accent:#1D5BA8;--accent-soft:#E3ECF8;--curve:#B8700F;--curve-soft:#F7EBD8;--good:#2D7A4C;--good-soft:#E2F1E8;--warn:#A8690B;--warn-soft:#FAEFD9;--bad:#B03434;--bad-soft:#F8E3E3;
+--display:"Archivo","Arial Narrow",Arial,sans-serif;--body:"Public Sans",system-ui,-apple-system,"Segoe UI",sans-serif;--mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:14px;line-height:1.55}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:20px;padding-block:28px 60px}
+h1,h2,h3{font-family:var(--display);font-stretch:85%;margin:0;line-height:1.15;text-wrap:balance}
+h1{font-size:clamp(1.8rem,4vw,2.6rem);font-weight:800}
+h2{font-size:1.45rem;font-weight:750;margin-bottom:12px}
+h3{font-size:1.05rem;font-weight:700;margin-bottom:8px}
+.eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);font-weight:600}
+header{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:flex-end;border-bottom:2px solid var(--ink);padding-bottom:16px}
+.meta{font-family:var(--mono);font-size:.75rem;color:var(--muted);display:grid;gap:2px;text-align:right}
+.meta b{color:var(--ink)}
+section{margin-top:34px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-top:20px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.kpi span{display:block;font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.kpi b{font-family:var(--mono);font-size:1.15rem;font-variant-numeric:tabular-nums}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
+.card img{width:100%;height:auto;display:block}
+.commentary{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--curve);border-radius:10px;padding:14px 18px}
+.commentary ul{margin:0;padding-left:18px;display:grid;gap:6px}
+.tbl{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:.84rem}
+th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{background:var(--surface2);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600;white-space:nowrap}
+td.r,th.r{text-align:right;font-family:var(--mono);font-size:.8rem;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+.neg{color:var(--bad)}.pos{color:var(--good)}
+.pill{display:inline-block;font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.GREEN,.PASS,.MATCH{background:var(--good-soft);color:var(--good)}
+.AMBER,.WATCH{background:var(--warn-soft);color:var(--warn)}
+.RED,.FAIL,.BREAK,.HELD,.FAILED{background:var(--bad-soft);color:var(--bad)}
+.SUCCEEDED,.RUNNING{background:var(--accent-soft);color:var(--accent)}
+.bar{height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;min-width:80px}
+.bar i{display:block;height:100%}
+.note{color:var(--muted);font-size:.82rem;margin-top:8px}
+.mono{font-family:var(--mono);font-size:.78rem}
+ul.plain{margin:0;padding-left:18px;display:grid;gap:4px}
+footer{margin-top:40px;color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:14px}
+@media (max-width:860px){.grid2{grid-template-columns:1fr}.meta{text-align:left}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div>
+    <div class="eyebrow">QuantRisk Platform &middot; Daily risk report</div>
+    <h1>Risk report for {{ as_of.strftime('%A, %B %d, %Y') }}</h1>
+  </div>
+  <div class="meta">
+    <span>run <b>{{ run.run_id }}</b> <span class="pill {{ run.status }}">{{ run.status }}</span></span>
+    <span>git {{ (run.git_sha or 'n/a')[:10] }} &middot; config {{ run.config_hash }} &middot; v{{ run.code_version }}</span>
+    <span>load {{ summ.load_id }} &middot; generated {{ generated }}</span>
+  </div>
+</header>
+
+<div class="kpis">{% for k, v in kpis %}<div class="kpi"><span>{{ k }}</span><b>{{ v }}</b></div>{% endfor %}</div>
+
+<section>
+  <h2>Summary</h2>
+  <div class="commentary"><ul>{% for c in commentary %}<li>{{ c }}</li>{% endfor %}</ul></div>
+</section>
+
+<section>
+  <h2>Limits</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Limit</th><th>Description</th><th class="r">Value</th><th class="r">Amber</th><th class="r">Red</th><th>Utilization</th><th>Status</th></tr></thead>
+    <tbody>{% for l in limits %}
+      {% set money = l.limit_id not in ['BACKTEST_EXC','PD_PSI','RECON_BREAKS'] %}
+      <tr><td class="mono">{{ l.limit_id }}</td><td>{{ l.description }}</td>
+      <td class="r">{% if money %}{{ usd(l.value) }}{% else %}{{ '%.3f'|format(l.value) if l.limit_id=='PD_PSI' else '%d'|format(l.value) }}{% endif %}</td>
+      <td class="r">{% if money %}{{ usd(l.amber) }}{% else %}{{ l.amber }}{% endif %}</td>
+      <td class="r">{% if money %}{{ usd(l.red) }}{% else %}{{ l.red }}{% endif %}</td>
+      <td><div class="bar"><i style="width:{{ [l.utilization*100,100]|min }}%;background:{{ 'var(--bad)' if l.status=='RED' else 'var(--warn)' if l.status=='AMBER' else 'var(--good)' }}"></i></div><span class="mono">{{ '%.0f'|format(l.utilization*100) }}%</span></td>
+      <td><span class="pill {{ l.status }}">{{ l.status }}</span></td></tr>{% endfor %}
+    </tbody></table></div>
+</section>
+
+<section>
+  <h2>Market data</h2>
+  <div class="grid2">
+    <div class="card"><img src="{{ charts.curve }}" alt="Treasury par and zero curves"></div>
+    <div class="tbl" style="align-self:start"><table>
+      <thead><tr><th>Market level</th><th class="r">Level</th><th class="r">1d chg (bp)</th><th class="r">1w chg (bp)</th></tr></thead>
+      <tbody>{% for m in market_rows %}<tr><td>{{ m.name }}</td><td class="r">{{ m.level }}</td>
+      <td class="r {{ 'neg' if m.d1>0 else 'pos' if m.d1<0 else '' }}">{{ '%+.1f'|format(m.d1) }}</td>
+      <td class="r {{ 'neg' if m.d5>0 else 'pos' if m.d5<0 else '' }}">{{ '%+.1f'|format(m.d5) }}</td></tr>{% endfor %}</tbody>
+    </table></div>
+  </div>
+  <p class="note">Curve bootstrapped from UST par yields; Nelson-Siegel benchmark fit RMSE {{ '%.2f'|format(summ.ns_rmse_bp) }}bp. Rising yields and wider spreads are shown in red because they reduce the value of a long bond portfolio.</p>
+</section>
+
+<section>
+  <h2>Fixed income: positions and sensitivities</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Book</th><th>Instrument</th><th>Rating</th><th class="r">Face</th><th class="r">Clean px</th><th class="r">Vendor px</th><th class="r">Market value</th><th class="r">Yield</th><th class="r">Mod dur</th><th class="r">Eff dur</th><th class="r">Convexity</th><th class="r">Spread dur</th><th class="r">DV01</th></tr></thead>
+    <tbody>{% for p in positions %}<tr><td>{{ p.book_id }}</td><td>{{ p.description }}</td><td>{{ p.rating }}</td>
+      <td class="r">{{ '{:,.0f}'.format(p.face_amount) }}</td><td class="r">{{ '%.3f'|format(p.clean_price) }}</td>
+      <td class="r">{{ '%.3f'|format(p.vendor_price) if p.vendor_price is not none else 'n/a' }}</td>
+      <td class="r">{{ usd(p.market_value) }}</td><td class="r">{{ '%.3f'|format(p.ytm*100) }}%</td>
+      <td class="r">{{ '%.2f'|format(p.mod_duration) }}</td><td class="r">{{ '%.2f'|format(p.eff_duration) }}</td>
+      <td class="r {{ 'neg' if p.convexity<0 else '' }}">{{ '%.1f'|format(p.convexity) }}</td><td class="r">{{ '%.2f'|format(p.spread_duration) }}</td>
+      <td class="r">{{ usd(p.dv01) }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <div class="grid2" style="margin-top:16px">
+    <div class="card"><img src="{{ charts.krd }}" alt="Key-rate DV01 by tenor"></div>
+    <div class="card"><h3>Reading this section</h3><ul class="plain">
+      <li><b>Effective duration</b> comes from repricing the bond with the whole curve shifted up and down 1bp. For MBS it is lower than modified duration because homeowners prepay when rates fall.</li>
+      <li><b>Negative convexity</b> on the MBS pools means their price gains shrink as rates fall and losses grow as rates rise.</li>
+      <li><b>Key-rate DV01</b> splits interest-rate risk by curve point; the four bars add up to total DV01 ({{ usd(summ.total_dv01) }} per bp).</li>
+    </ul></div>
+  </div>
+</section>
+
+<section>
+  <h2>Market risk: VaR and Expected Shortfall</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Confidence / horizon</th><th class="r">Historical VaR</th><th class="r">Historical ES</th><th class="r">Parametric VaR</th><th class="r">Parametric ES</th><th class="r">Monte Carlo VaR</th><th class="r">Monte Carlo ES</th></tr></thead>
+    <tbody>{% for r in var_table %}<tr><td>{{ r.label }}</td>
+      <td class="r">{{ usd(r.historical_var) }}</td><td class="r">{{ usd(r.historical_es) }}</td>
+      <td class="r">{{ usd(r.parametric_var) }}</td><td class="r">{{ usd(r.parametric_es) }}</td>
+      <td class="r">{{ usd(r.montecarlo_var) }}</td><td class="r">{{ usd(r.montecarlo_es) }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <p class="note">Historical: {{ '%d'|format(summ.lookback_days) }} days of factor moves replayed on today's portfolio with full revaluation. Parametric: delta-normal with EWMA covariance (lambda 0.94). Monte Carlo: 10,000 multivariate Student-t (5 dof) scenarios, full revaluation. 10-day figures use square-root-of-time scaling.</p>
+  <div class="grid2" style="margin-top:14px">
+    <div class="card"><img src="{{ charts.hist }}" alt="P&L histogram"></div>
+    <div class="card"><img src="{{ charts.backtest }}" alt="VaR backtest"></div>
+  </div>
+  <div class="grid2" style="margin-top:14px">
+    <div class="tbl" style="align-self:start"><table>
+      <thead><tr><th>Scope</th><th class="r">Hist VaR 99% 1d</th><th class="r">Hist ES 97.5% 1d</th><th class="r">Param VaR 99% 1d</th></tr></thead>
+      <tbody>{% for b in book_var %}<tr><td>{{ b.scope }}</td><td class="r">{{ usd(b.var) }}</td><td class="r">{{ usd(b.es) }}</td><td class="r">{{ usd(b.pvar) }}</td></tr>{% endfor %}</tbody>
+    </table><p class="note" style="padding:0 10px 10px">Book VaRs add to more than the total VaR: that gap is the diversification benefit.</p></div>
+    <div class="tbl" style="align-self:start"><table>
+      <thead><tr><th>Backtest statistic</th><th class="r">Value</th></tr></thead>
+      <tbody>
+        <tr><td>Exceptions / days</td><td class="r">{{ '%d'|format(summ.bt_exceptions) }} / {{ '%d'|format(summ.bt_n) }}</td></tr>
+        <tr><td>Expected at 99%</td><td class="r">{{ '%.1f'|format(summ.bt_expected) }}</td></tr>
+        <tr><td>Basel traffic light</td><td class="r"><span class="pill {{ summ.bt_zone }}">{{ summ.bt_zone }}</span></td></tr>
+        <tr><td>Kupiec POF p-value</td><td class="r">{{ '%.3f'|format(summ.bt_kupiec_p) }}</td></tr>
+        <tr><td>Christoffersen independence p-value</td><td class="r">{{ '%.3f'|format(summ.bt_christoffersen_p) }}</td></tr>
+        {% for k, v in contrib.items() %}<tr><td>VaR contribution: {{ k }}</td><td class="r">{{ usd(v) }}</td></tr>{% endfor %}
+      </tbody></table></div>
+  </div>
+</section>
+
+<section>
+  <h2>Stress testing</h2>
+  <div class="grid2">
+    <div class="card"><img src="{{ charts.stress }}" alt="Stress P&L by scenario"></div>
+    <div class="tbl" style="align-self:start"><table>
+      <thead><tr><th>Scenario</th><th class="r">Rates</th><th class="r">Spread</th><th class="r">Vol</th><th class="r">Total</th></tr></thead>
+      <tbody>{% for s in stress %}<tr><td><b>{{ s.name }}</b><div class="note" style="margin:2px 0 0">{{ s.description }}</div></td>
+        <td class="r {{ 'neg' if s.rates_pnl<0 else 'pos' if s.rates_pnl>0 else '' }}">{{ usd_m(s.rates_pnl, 2) }}</td>
+        <td class="r {{ 'neg' if s.spread_pnl<0 else 'pos' if s.spread_pnl>0 else '' }}">{{ usd_m(s.spread_pnl, 2) }}</td>
+        <td class="r {{ 'neg' if s.vol_pnl<0 else '' }}">{{ usd_m(s.vol_pnl, 2) }}</td>
+        <td class="r {{ 'neg' if s.total<0 else 'pos' }}"><b>{{ usd_m(s.total, 2) }}</b></td></tr>{% endfor %}</tbody>
+    </table></div>
+  </div>
+  <p class="note">Legs are revalued separately; total is the joint full revaluation, so it can differ slightly from the sum of legs (cross effects). Scenario file hash {{ summ.stress_scenario_hash }}.</p>
+</section>
+
+<section>
+  <h2>Credit risk: PD model and macro stress</h2>
+  <div class="kpis" style="margin-top:0">
+    <div class="kpi"><span>Obligors / EAD</span><b>{{ '{:,.0f}'.format(summ.credit_book_obligors) }} / {{ usd_m(ead, 0) }}</b></div>
+    <div class="kpi"><span>OOT AUC / Gini</span><b>{{ '%.3f'|format(summ.pd_auc_oot) }} / {{ '%.3f'|format(summ.pd_gini_oot) }}</b></div>
+    <div class="kpi"><span>Central tendency</span><b>{{ '%.2f'|format(summ.pd_central_tendency*100) }}%</b></div>
+    <div class="kpi"><span>PSI</span><b>{{ '%.3f'|format(summ.pd_psi) }}</b></div>
+    <div class="kpi"><span>EL base / adverse / severe</span><b>{{ usd_m(el.BASELINE) }} / {{ usd_m(el.ADVERSE) }} / {{ usd_m(el.SEVERE) }}</b></div>
+  </div>
+  <div class="grid2" style="margin-top:14px">
+    <div class="card"><img src="{{ charts.credit }}" alt="Expected loss by grade"></div>
+    <div class="card"><img src="{{ charts.dr }}" alt="Default rates and unemployment"></div>
+  </div>
+  <div class="tbl" style="margin-top:14px"><table>
+    <thead><tr><th>Grade</th><th class="r">Obligors</th><th class="r">EAD</th><th class="r">TTC PD</th><th class="r">PD base</th><th class="r">PD adverse</th><th class="r">PD severe</th><th class="r">EL base</th><th class="r">EL adverse</th><th class="r">EL severe</th></tr></thead>
+    <tbody>{% for g in credit_rows %}<tr><td><b>{{ g.grade }}</b></td><td class="r">{{ '{:,}'.format(g.obligors) }}</td><td class="r">{{ usd_m(g.ead) }}</td>
+      <td class="r">{{ '%.2f'|format(g.pd_ttc*100) }}%</td><td class="r">{{ '%.2f'|format(g.pd_BASELINE*100) }}%</td><td class="r">{{ '%.2f'|format(g.pd_ADVERSE*100) }}%</td><td class="r">{{ '%.2f'|format(g.pd_SEVERE*100) }}%</td>
+      <td class="r">{{ usd_m(g.el_BASELINE, 2) }}</td><td class="r">{{ usd_m(g.el_ADVERSE, 2) }}</td><td class="r neg">{{ usd_m(g.el_SEVERE, 2) }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <div class="grid2" style="margin-top:14px">
+    <div class="tbl" style="align-self:start"><table>
+      <thead><tr><th>Grade</th><th class="r">n (OOT)</th><th class="r">Defaults</th><th class="r">Observed DR</th><th class="r">PIT PD</th><th class="r">TTC PD</th><th class="r">p-value</th><th>Test</th></tr></thead>
+      <tbody>{% for c in calib %}<tr><td>{{ c.grade }}</td><td class="r">{{ '{:,}'.format(c.n) }}</td><td class="r">{{ c.defaults }}</td><td class="r">{{ '%.2f'|format(c.observed_dr*100) }}%</td><td class="r">{{ '%.2f'|format(c.predicted_pd*100) }}%</td><td class="r">{{ '%.2f'|format(c.ttc_pd*100) }}%</td><td class="r">{{ '%.3f'|format(c.p_value) }}</td><td><span class="pill {{ c.status }}">{{ c.status }}</span></td></tr>{% endfor %}</tbody>
+    </table><p class="note" style="padding:0 10px 10px">Binomial calibration test on out-of-time years. TTC PDs are converted to point-in-time with each year's actual macro conditions before testing.</p></div>
+    <div class="tbl" style="align-self:start"><table>
+      <thead><tr><th>Feature</th><th class="r">Coefficient</th><th class="r">Information value</th></tr></thead>
+      <tbody>{% for k, v in coef.items() %}<tr><td class="mono">{{ k }}</td><td class="r">{{ '%+.3f'|format(v) }}</td><td class="r">{{ '%.3f'|format(iv[k]) }}</td></tr>{% endfor %}
+      <tr><td>Satellite: unemployment (per pt)</td><td class="r">{{ '%+.3f'|format(summ.sat_b_unemp) }}</td><td class="r">R&sup2; {{ '%.2f'|format(summ.sat_r2) }}</td></tr>
+      <tr><td>Satellite: GDP growth (per pt)</td><td class="r">{{ '%+.3f'|format(summ.sat_b_gdp) }}</td><td class="r"></td></tr></tbody>
+    </table></div>
+  </div>
+</section>
+
+<section>
+  <h2>Data quality and reconciliation</h2>
+  <div class="grid2">
+    <div class="tbl" style="align-self:start"><table>
+      <thead><tr><th>Check</th><th>Severity</th><th class="r">Rows</th><th class="r">Failed</th><th>Status</th></tr></thead>
+      <tbody>{% for d in dq %}<tr><td class="mono">{{ d.check_name }}{% if d.detail %}<div class="note" style="margin:2px 0 0;font-family:var(--body)">{{ d.detail }}</div>{% endif %}</td><td>{{ d.severity }}</td><td class="r">{{ '{:,}'.format(d.rows_checked) }}</td><td class="r">{{ d.rows_failed }}</td><td><span class="pill {{ d.status }}">{{ d.status }}</span></td></tr>{% endfor %}</tbody>
+    </table></div>
+    <div class="tbl" style="align-self:start"><table>
+      <thead><tr><th>Book / instrument</th><th>Measure</th><th class="r">Risk system</th><th class="r">Ledger</th><th class="r">Diff</th><th>Status</th></tr></thead>
+      <tbody>{% for r in recon %}<tr><td>{{ r.book_id }} {{ r.instrument_id or '(book total)' }}{% if r.comment %}<div class="note" style="margin:2px 0 0">{{ r.comment }} &middot; owner: {{ r.owner }}</div>{% endif %}</td><td class="mono">{{ r.measure }}</td>
+        <td class="r">{{ '{:,.0f}'.format(r.value_risk) if r.value_risk is not none else 'n/a' }}</td><td class="r">{{ '{:,.0f}'.format(r.value_ledger) if r.value_ledger is not none else 'n/a' }}</td>
+        <td class="r">{{ '{:,.0f}'.format(r.difference) if r.difference is not none else 'n/a' }}</td><td><span class="pill {{ r.status }}">{{ r.status }}</span></td></tr>{% endfor %}</tbody>
+    </table></div>
+  </div>
+</section>
+
+<section>
+  <h2>Governance: model validation and inventory</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Model</th><th>Test</th><th class="r">Value</th><th>Threshold</th><th>Status</th><th>Detail</th></tr></thead>
+    <tbody>{% for v in validation %}<tr><td class="mono">{{ v.model_id }}</td><td class="mono">{{ v.test_name }}</td><td class="r">{{ '%.4f'|format(v.value) if v.value is not none else '' }}</td><td>{{ v.threshold }}</td><td><span class="pill {{ v.status }}">{{ v.status }}</span></td><td class="note" style="margin:0">{{ v.detail or '' }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <div class="tbl" style="margin-top:14px"><table>
+    <thead><tr><th>Model ID</th><th>Name</th><th>Owner</th><th class="r">Tier</th><th>Version</th><th>Last validated</th><th>Next due</th></tr></thead>
+    <tbody>{% for m in inventory %}<tr><td class="mono">{{ m.model_id }}</td><td>{{ m.name }}</td><td>{{ m.owner }}</td><td class="r">{{ m.tier }}</td><td>{{ m.version }}</td><td>{{ m.last_validation }}</td><td>{{ m.next_validation }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <p class="note">Key assumptions and limitations are documented in docs/model_risk_memo.md: 500-day historical window, square-root-of-time scaling, stylized MBS prepayment model, fixed LGD by seniority, sample data in place of licensed vendor feeds.</p>
+</section>
+
+<footer>
+  Lineage: run {{ run.run_id }} &middot; as-of {{ as_of }} &middot; load {{ summ.load_id }} &middot; git {{ run.git_sha or 'n/a' }} &middot; config {{ run.config_hash }} &middot; scenarios {{ summ.stress_scenario_hash }} &middot; factor history {{ '%d'|format(summ.history_days) }} days.<br>
+  Generated automatically by QuantRisk. Figures are based on sample data for demonstration.
+</footer>
+</div>
+</body>
+</html>
