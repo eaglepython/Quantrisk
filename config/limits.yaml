@@ -1,0 +1,59 @@
+# Risk limits and model-monitoring triggers.
+# direction "above" means breach when value > threshold.
+limits:
+  - id: VAR_99_1D_TOTAL
+    description: 1-day 99% historical VaR, total portfolio (USD)
+    metric: var_hist_99_1d
+    scope: TOTAL
+    amber: 3250000
+    red: 4000000
+    direction: above
+  - id: ES_975_1D_TOTAL
+    description: 1-day 97.5% historical Expected Shortfall, total (USD)
+    metric: es_hist_975_1d
+    scope: TOTAL
+    amber: 4000000
+    red: 5000000
+    direction: above
+  - id: DV01_TOTAL
+    description: Portfolio DV01, absolute (USD per bp)
+    metric: dv01
+    scope: TOTAL
+    amber: 260000
+    red: 300000
+    direction: above
+  - id: STRESS_WORST
+    description: Worst stress loss across market scenarios (USD, positive = loss)
+    metric: stress_worst_loss
+    scope: TOTAL
+    amber: 45000000
+    red: 55000000
+    direction: above
+  - id: BACKTEST_EXC
+    description: VaR 99% backtest exceptions, last 250 days (Basel traffic light)
+    metric: backtest_exceptions_99
+    scope: TOTAL
+    amber: 5
+    red: 10
+    direction: at_or_above
+  - id: PD_PSI
+    description: PD model population stability index
+    metric: pd_psi
+    scope: CREDIT_BOOK
+    amber: 0.10
+    red: 0.25
+    direction: above
+  - id: CREDIT_EL_SEVERE
+    description: Expected loss under severely adverse scenario (USD)
+    metric: el_severe
+    scope: CREDIT_BOOK
+    amber: 175000000
+    red: 225000000
+    direction: above
+  - id: RECON_BREAKS
+    description: Open reconciliation breaks
+    metric: recon_breaks
+    scope: TOTAL
+    amber: 1
+    red: 3
+    direction: at_or_above

@@ -1,0 +1,51 @@
+# Local stack: PostgreSQL + daily batch + Streamlit dashboard
+#   docker compose up --build            (runs the batch once, then serves the dashboard on :8501)
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: quantrisk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-quantrisk}
+      POSTGRES_DB: quantrisk
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quantrisk"]
+      interval: 5s
+      retries: 10
+
+  batch:
+    build: .
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      QR_DATABASE_URL: postgresql://quantrisk:${POSTGRES_PASSWORD:-quantrisk}@db:5432/quantrisk
+      QR_ENV: docker
+    command: ["run", "--as-of", "${AS_OF:-2026-09-25}", "--with-sample"]
+    volumes:
+      - ./reports:/app/reports
+
+  views:
+    image: postgres:16
+    depends_on:
+      batch: { condition: service_completed_successfully }
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-quantrisk}
+    volumes:
+      - ./sql/migrations/002_reporting_views.sql:/views.sql:ro
+    command: ["psql", "-h", "db", "-U", "quantrisk", "-d", "quantrisk", "-f", "/views.sql"]
+
+  dashboard:
+    build: .
+    depends_on:
+      batch: { condition: service_completed_successfully }
+    environment:
+      QR_DATABASE_URL: postgresql://quantrisk:${POSTGRES_PASSWORD:-quantrisk}@db:5432/quantrisk
+    entrypoint: ["streamlit", "run", "dashboards/app.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    command: []
+    ports: ["8501:8501"]
+
+volumes:
+  pgdata:

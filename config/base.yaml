@@ -1,0 +1,58 @@
+# QuantRisk base configuration.
+# Values of the form ${VAR:-default} are read from the environment first.
+project: quantrisk
+environment: ${QR_ENV:-dev}
+
+database:
+  url: ${QR_DATABASE_URL:-sqlite:///data/quantrisk.db}
+
+paths:
+  raw: ${QR_RAW_PATH:-data/raw}
+  curated: ${QR_CURATED_PATH:-data/curated}
+  reports: ${QR_REPORTS_PATH:-reports}
+
+market:
+  curve_id: UST_PAR
+  curve_tenors: [0.25, 0.5, 1, 2, 3, 5, 7, 10, 20, 30]
+  key_tenors: [2, 5, 10, 30]
+  spread_indices: [IG, HY, MBS]
+
+risk:
+  confidence_levels: [0.95, 0.975, 0.99]
+  horizons_days: [1, 10]
+  lookback_days: 500
+  backtest_window: 250
+  mc_paths: 10000
+  mc_dof: 5
+  mc_seed: 20260927
+  ewma_lambda: 0.94
+  bump_bp: 1.0
+
+credit:
+  dev_years: [2005, 2020]
+  oot_years: [2021, 2024]
+  current_year: 2025
+  master_scale:
+    # grade: upper PD bound (exclusive)
+    AAA: 0.0003
+    AA: 0.001
+    A: 0.003
+    BBB: 0.01
+    BB: 0.03
+    B: 0.10
+    CCC: 1.0
+  pd_floor: 0.0003
+  lgd:
+    SENIOR_SECURED: 0.35
+    SENIOR_UNSECURED: 0.45
+    SUBORDINATED: 0.65
+
+data_quality:
+  max_curve_move_bp: 50
+  stale_price_days: 3
+  rate_bounds: [-0.02, 0.25]
+  model_vs_vendor_price_tol: 0.50   # price points (per 100 face)
+
+reconciliation:
+  market_value_tol_pct: 0.0001      # 0.01%
+  quantity_tol: 0
