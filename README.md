@@ -12,6 +12,10 @@ streamlit run dashboards/app.py                      # interactive dashboard
 docker compose up --build                            # Postgres + batch + dashboard
 ```
 
+| Automated risk report | Streamlit dashboard |
+|---|---|
+| ![Risk report](docs/img/report.png) | ![Dashboard](docs/img/dashboard.png) |
+
 ---
 
 ## What it does
