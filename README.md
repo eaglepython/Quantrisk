@@ -1,129 +1,260 @@
-# QuantRisk Platform
+# QuantRisk
 
-**Fixed-income, market-risk and credit-risk analytics, run end to end every business day.**
+<div align="center">
+  <img src="docs/img/report.png" alt="QuantRisk report" width="1000" />
+</div>
 
-I built QuantRisk to do what a bank or treasury risk desk does every evening. It pulls in rates, prices, spreads and positions, checks the data, prices every bond, measures how much the portfolio could lose, stress tests it, estimates credit losses under recession scenarios, and publishes a report someone can trust at 8 a.m. Every number traces back to its input data, code version and configuration.
+<p align="center">
+  <strong>Operational fixed-income, market-risk, and credit-risk analytics for a live daily risk process.</strong>
+</p>
 
-It runs locally in about 7 seconds on a $413M sample portfolio (14 bonds, 2 books) and a 3,000-obligor loan book, on SQLite or PostgreSQL.
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" />
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-green" />
+  <img alt="Dashboard" src="https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B?logo=streamlit&logoColor=white" />
+  <img alt="AI" src="https://img.shields.io/badge/Ollama-Local%20AI-5A67D8" />
+</p>
 
-```
-quantrisk run --as-of 2026-09-25 --with-sample      # full batch + HTML risk report
-streamlit run dashboards/app.py                      # interactive dashboard
-docker compose up --build                            # Postgres + batch + dashboard
-```
+QuantRisk is designed to behave like a real treasury or risk operating desk: it ingests market data, validates it, prices bonds, measures exposure, runs stress and credit scenarios, checks limits, and publishes a risk report the same way a daily production workflow would.
 
-| Automated risk report | Streamlit dashboard |
-|---|---|
-| ![Risk report](docs/img/report.png) | ![Dashboard](docs/img/dashboard.png) |
+Every result is tied back to its code version, config hash, and input data lineage so the process remains reviewable and auditable.
 
 ---
 
-## What it does
+## Why it matters
 
-| Layer | What's in the code | Where |
-|---|---|---|
-| **Market-data ingestion** | Landing files for UST par curves, bond prices, IG/HY/MBS spread indices, vol index, positions, ledger, macro and obligor data. Typed, validated and loaded idempotently with a `load_id`. FRED extractor for real Treasury data. | `ingest/` |
-| **Fixed-income engine** | Par-curve bootstrap to zero rates, Nelson-Siegel benchmark fit, bullet bond and agency MBS pricing (S-curve prepayment model), yield, modified and effective duration, convexity, spread duration, DV01, key-rate durations (2Y/5Y/10Y/30Y triangular bumps). | `fixed_income/` |
-| **Risk engine** | Historical-simulation, parametric (delta-normal, EWMA) and Monte Carlo (multivariate Student t, full revaluation) VaR and Expected Shortfall at 95/97.5/99%, 1 and 10 days, by book. Euler risk contributions. Backtesting with Basel traffic light, Kupiec and Christoffersen tests. | `risk/` |
-| **Stress testing** | Config-driven scenarios: parallel +/-100 and +200bp, bear steepener, bear and bull flattener, IG/HY/MBS spread widening, volatility shock, risk-off combination, and a replay of the worst 10-day window in history. Full revaluation with rates/spread/vol decomposition. | `stress/`, `config/scenarios.yaml` |
-| **Credit module** | Logistic PD scorecard on financial ratios, calibration to long-run central tendency, rating master scale, AUC/Gini/KS, information value, point-in-time binomial calibration tests, PSI, macro satellite model (unemployment, GDP), baseline/adverse/severe PD and expected loss. | `credit/` |
-| **Data layer** | 25 PostgreSQL tables with keys, foreign keys and check constraints; 15+ data-quality rules (CRITICAL holds the run); reconciliation log against the ledger; run-level lineage; reporting views for Power BI. | `data/`, `sql/migrations/` |
-| **Engineering** | Installable package, YAML config with env-var expansion and a config hash, structured JSON logging with `run_id`, 33 tests (91% coverage), ruff, mypy, Dockerfile, docker-compose, GitHub Actions CI against Postgres. | repo root |
-| **Deployment** | Terraform for AWS: EventBridge Scheduler (weekdays 17:30 Central) triggers an ECS Fargate task; RDS PostgreSQL, S3, Secrets Manager, CloudWatch metric filters and alarms to SNS email. Azure mapping included. | `infra/` |
-| **Reporting** | Self-contained HTML risk report with auto-generated commentary, limits, market moves, positions, VaR/ES, backtest, stress, credit, data quality, reconciliation and governance. Streamlit dashboard with seven tabs. | `reporting/`, `dashboards/` |
-| **Governance** | Model inventory, limits with amber/red triggers, 18 automated validation tests written every run, model-risk memo with assumptions and limitations. | `governance/`, `config/`, `docs/` |
+This is not a demo. It is a business-facing risk operating system for a modern finance team.
 
-## The daily run
+The real value is in how it translates market moves into decisions:
+
+- portfolio exposures become risk-adjusted numbers
+- curve changes become DV01 and duration effects
+- scenario shocks become loss estimates and control alerts
+- model governance becomes a daily operating routine
+- AI adds a plain-English summary without sending data outside the environment
+
+In other words, the system helps a risk desk answer the questions that matter every morning:
+
+- What changed since yesterday?
+- Where are the losses concentrated?
+- Which positions are approaching limits?
+- Which scenarios are driving the risk?
+- Is the portfolio still within policy?
+
+---
+
+## What the dashboard is built to do
+
+The dashboard is meant to look and behave like a real risk command center.
+
+It helps a user quickly see:
+
+- market value and P&L context
+- VaR and Expected Shortfall by horizon
+- stress losses and scenario drivers
+- credit loss outlook under adverse conditions
+- governance state, validation results and limit utilization
+- operational data freshness and health checks
+
+This combines analytics, controls, and monitoring into a single operational surface.
+
+---
+
+## Why this exists
+
+A risk platform is only useful when it is operational, not just demonstrative.
+
+QuantRisk combines four things that matter in production:
+
+- live market inputs and portfolio data
+- deterministic risk calculations
+- automated governance and limits
+- a fast review layer with dashboard and report outputs
+
+This is the same pattern used in a daily risk-control workflow: validate, price, measure, stress, govern, and summarize.
+
+---
+
+## Live operational workflow
 
 ```mermaid
 flowchart LR
-  A[Scheduler 17:30 CT] --> B[Ingest landing files]
-  B --> C{Data-quality rules}
-  C -- critical fail --> H[Run HELD + alert]
-  C -- pass --> D[Curve build + valuation + KRD]
-  D --> E[Reconcile to ledger]
-  E --> F[VaR / ES: hist, param, MC]
-  F --> G[Backtest]
-  G --> I[Stress scenarios]
-  I --> J[Credit PD + macro stress]
-  J --> K[Validation tests + limits]
-  K --> L[Report + dashboard]
+  A[Scheduler / daily trigger] --> B[Load raw inputs]
+  B --> C{Data quality checks}
+  C -- fail --> D[Hold run + alert]
+  C -- pass --> E[Build curves + valuations]
+  E --> F[Reconcile to ledger]
+  F --> G[VaR / ES / backtest]
+  G --> H[Stress scenarios]
+  H --> I[Credit PD + macro stress]
+  I --> J[Limit checks + validation]
+  J --> K[HTML report + Streamlit dashboard]
+  K --> L[AI summary from local Ollama]
 ```
 
-One command, one `run_id`. The `risk_run` row stores the git SHA, config hash and code version; every result table is keyed by `run_id`; every input row carries a `load_id`. So any number on the report traces back to its source file, code and settings.
+---
 
-## Results on the sample data (as of 2026-09-25)
+## Highlights
 
-| Measure | Value |
+| Capability | What it does |
 |---|---|
-| Market value / DV01 / effective duration | $412.7M / $243,875 per bp / 5.91 years |
-| 1-day 99% VaR: historical / parametric / Monte Carlo | $3.58M / $3.56M / $3.66M |
-| 1-day 97.5% ES (historical) | $3.74M |
-| Backtest (250 days, 99%) | 2 exceptions vs 2.5 expected, GREEN, Kupiec p = 0.74 |
-| Worst stress | Parallel +200bp: -$46.2M. Worst historical 10 days: -$25.4M |
-| PD model | OOT AUC 0.718, Gini 0.437, PSI 0.042 |
-| Credit expected loss: baseline / adverse / severe | $13.3M / $47.8M / $169.6M |
-| Limits | 5 green, 3 amber (VaR at 90% of limit, worst stress, reconciliation breaks) |
+| Market data ingestion | Reads landing files for curves, prices, spreads, vols, positions, ledger, macro and obligor data |
+| Fixed-income analytics | Bootstrap curves, price bonds, calculate DV01, duration, convexity and key-rate risk |
+| Risk engine | Historical, parametric and Monte Carlo VaR / ES with backtesting |
+| Stress testing | Parallel, steepener, spread, volatility and combined recession scenarios |
+| Credit module | PD scorecard, expected loss, calibration and macro stress |
+| Governance | Validation tests, limits, alerts and operational health checks |
+| Reporting | HTML report and interactive Streamlit dashboard |
+| AI summary | Private local summarization via Ollama |
 
-The sample data has three issues planted on purpose: a stale vendor price, a vendor price 0.85 points away from the model, and a $500k quantity break between the book of record and the ledger. The controls catch all three and they show up in the report commentary.
+---
+
+## Executive summary
+
+QuantRisk is a full-stack risk platform designed for daily operational use across a fixed-income and credit portfolio.
+
+It gives a finance team the ability to:
+
+- ingest and validate market data every business day
+- run deterministic risk calculations on a real portfolio
+- assess losses under stressed scenarios
+- monitor governance and limit utilization
+- generate an audit-friendly HTML report
+- review the situation in a clear dashboard interface
+- add private AI guidance from a local model
+
+This is the practical foundation for a real production risk workflow rather than a static proof of concept.
+
+---
 
 ## Quick start
 
 ```bash
 pip install -e ".[dev,dashboard]"
-quantrisk --plain-logs run --as-of 2026-09-25 --with-sample   # SQLite by default
-open reports/latest.html
+quantrisk --plain-logs run --as-of 2026-09-25 --with-sample
 streamlit run dashboards/app.py
-make test                                                      # 33 tests
 ```
 
-On PostgreSQL:
+### Daily production run
+
+```powershell
+# PowerShell
+$env:FRED_API_KEY = "your_fred_api_key"
+python -m quantrisk.cli daily --as-of 2026-09-25 --no-ai
+```
+
+### Local AI summary
 
 ```bash
-export QR_DATABASE_URL=postgresql://quantrisk:quantrisk@localhost:5432/quantrisk
-quantrisk run --as-of 2026-09-25 --with-sample
-psql "$QR_DATABASE_URL" -f sql/migrations/002_reporting_views.sql
-psql "$QR_DATABASE_URL" -c "select * from v_daily_risk_summary"
+ollama serve
+ollama pull llama3.2
+quantrisk ai --prompt "Summarize the daily risk posture in plain English."
 ```
 
-With Docker: `docker compose up --build`, then open http://localhost:8501.
-
-Real Treasury curves: set `FRED_API_KEY` and use `quantrisk.ingest.sources.write_treasury_curves`.
-
-## Repository layout
-
-```
-config/            base.yaml, scenarios.yaml, limits.yaml, model_inventory.yaml
-src/quantrisk/
-  ingest/          sample_data.py, sources.py (FRED), dq_rules.py, loader.py
-  data/            schema.py (single source for Postgres + SQLite), db.py, reconciliation.py
-  fixed_income/    curves.py, bonds.py, krd.py, portfolio.py
-  risk/            factors.py (revaluation), var.py, backtest.py
-  stress/          engine.py
-  credit/          pd_model.py, calibration.py, macro.py, engine.py
-  governance/      limits.py, validation.py
-  reporting/       report.py, charts.py, templates/report.html.j2
-  pipeline.py      the daily run
-  cli.py           quantrisk init-db | generate-sample | run | report
-dashboards/app.py  Streamlit
-sql/migrations/    001_init.sql (generated), 002_reporting_views.sql
-tests/             unit + end-to-end
-infra/             terraform/aws, azure/README.md
-docs/              architecture.md, data_model.md, model_risk_memo.md, runbook.md
-```
-
-## Design decisions
-
-- **One revaluation path.** Historical, Monte Carlo and stress all run through the same full-revaluation function on the same 14 risk factors, so differences between methods come from the scenarios, not the pricing.
-- **Effective, not modified, duration** drives DV01 and KRD, because MBS cash flows change with rates.
-- **TTC PD, PIT testing.** The scorecard is calibrated through the cycle; calibration tests convert to point in time with each year's macro data, since observed defaults are point in time.
-- **Reporting never recalculates.** The report, dashboard and Power BI views read persisted results only.
-- **Reference data is upserted, inputs are replaced by slice.** Re-running a date is safe and never duplicates rows (tested).
-
-## Limitations
-
-Sample data stands in for licensed vendor feeds. The MBS prepayment model is stylized. Multi-day VaR uses square-root-of-time scaling. Liquidity risk and counterparty risk are not modeled yet. See `docs/model_risk_memo.md` for the full list and compensating controls.
+> For a real daily production workflow, use:
+> - FRED API key for live curve/macro inputs
+> - Ollama local model for AI summary
+> - Windows Task Scheduler or a scheduled job to trigger run_daily.ps1
 
 ---
 
-Built by Joseph Bidias. MIT licensed.
+## Risk report and dashboard
+
+| Risk report | Streamlit dashboard |
+|---|---|
+| ![Risk report](docs/img/report.png) | ![Dashboard](docs/img/dashboard.png) |
+
+This gives you both an audit-grade report and a live operational review layer in one system.
+
+---
+
+## What the platform produces
+
+| Measure | Example output |
+|---|---|
+| Market value | $412.7M |
+| 1-day 99% VaR | ~$3.6M |
+| 1-day 97.5% ES | ~$3.7M |
+| Worst stress | Parallel +200bp: -$46.2M |
+| Credit expected loss | Baseline / adverse / severe |
+| Limits | Green, amber and red control checks |
+
+---
+
+## Architecture overview
+
+### Core layers
+
+| Layer | Description | Location |
+|---|---|---|
+| Ingestion | Landing files, validations, FRED imports, data quality checks | `src/quantrisk/ingest/` |
+| Fixed income | Yield curves, bonds, valuations, KRD and DV01 | `src/quantrisk/fixed_income/` |
+| Risk | VaR, ES, backtest and stress logic | `src/quantrisk/risk/` |
+| Credit | PD scoring, calibration, expected loss | `src/quantrisk/credit/` |
+| Governance | Limits, validation, model inventory | `src/quantrisk/governance/` |
+| Reporting | HTML report and dashboard output | `src/quantrisk/reporting/`, `dashboards/` |
+| Operations | Daily cycle, health checks and alerts | `src/quantrisk/daily.py`, `src/quantrisk/ops.py` |
+
+---
+
+## Repository layout
+
+```text
+config/                     configuration and scenarios
+src/quantrisk/
+  ingest/                   sample_data, live sources, DQ rules
+  data/                     schema, db, reconciliation
+  fixed_income/             curves, bonds, KRD, portfolio
+  risk/                     VaR, backtest, factors
+  stress/                   stress engine
+  credit/                   PD, calibration, macro stress
+  governance/               limits and validation
+  reporting/                report generation and template
+  pipeline.py               daily batch orchestration
+  cli.py                    command-line entry point
+  ai/                       local Ollama integration
+  daily.py                  production daily wrapper
+  ops.py                    operational health checks
+  alerts.py                 alert payloads
+
+dashboards/app.py           Streamlit dashboard
+sql/migrations/            schema and reporting views
+tests/                     automated validation suite
+infra/                     cloud deployment scaffolding
+```
+
+---
+
+## Design principles
+
+- One revaluation path for all methods
+- Persisted results instead of recomputation
+- Audit trail for every run
+- Explicit limit and validation controls
+- Local AI keeps the summary private and operationally safe
+
+---
+
+## Tools and stack
+
+- Python 3.11+
+- pandas / numpy / scipy / scikit-learn
+- SQLAlchemy + SQLite / PostgreSQL
+- Plotly + Streamlit
+- Jinja2 reporting templates
+- Ollama for local AI summaries
+- Docker and Terraform support for deployment
+
+---
+
+## Production notes
+
+The project is built to support a realistic daily workflow, but live market data still depends on external inputs such as a FRED API key. The same operational logic works equally well on a local workstation, a VM, or a scheduled production environment.
+
+---
+
+## License
+
+MIT licensed.
+
+Built for operational risk review, not just demo presentation.

@@ -1,5 +1,7 @@
 """End-to-end: generate sample data, run the batch, check persisted results and controls."""
 
+from datetime import date
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -22,6 +24,78 @@ def test_run_succeeds_with_lineage(pipeline_run):
     assert run.config_hash == settings.hash
     report = settings.path("reports") / str(AS_OF) / f"risk_report_{run_id}.html"
     assert report.exists() and report.stat().st_size > 50_000
+
+
+def test_cli_accepts_real_data_flag(monkeypatch, tmp_path):
+    import quantrisk.cli as cli
+
+    calls = {}
+
+    def fake_generate(as_of, out_dir, **kwargs):
+        calls["as_of"] = as_of
+        calls["out_dir"] = out_dir
+        calls["kwargs"] = kwargs
+        return out_dir / as_of.isoformat()
+
+    monkeypatch.setattr("quantrisk.ingest.sources.generate_live_landing", fake_generate)
+    monkeypatch.setattr(cli, "load_settings", lambda *args, **kwargs: type("S", (), {
+        "path": lambda self, key: tmp_path / key,
+        "database_url": "sqlite:///:memory:",
+        "hash": "abc123",
+    })())
+    monkeypatch.setattr(cli, "setup_logging", lambda **kwargs: None)
+    monkeypatch.setattr("quantrisk.pipeline.run_daily", lambda *args, **kwargs: "R-REAL")
+
+    rc = cli.main(["run", "--as-of", "2026-09-25", "--with-real-data"])
+
+    assert rc == 0
+    assert calls["as_of"] == AS_OF
+    assert calls["out_dir"] == tmp_path / "raw"
+
+
+def test_live_ingest_avoids_duplicate_macro_and_fills_curve(monkeypatch, tmp_path):
+    import pandas as pd
+
+    from quantrisk.ingest import sources
+
+    def fake_fetch_fred(series_id, start, end, retries=3):
+        if series_id == "UNRATE":
+            return pd.Series([3.8, 3.7, 3.5], index=pd.to_datetime(["2023-01-31", "2024-01-31", "2025-01-31"]))
+        if series_id == "GDPC1":
+            return pd.Series(
+                [1.0, 1.02, 1.03, 1.05, 1.01, 1.04, 1.06, 1.08],
+                index=pd.to_datetime([
+                    "2023-03-31", "2023-06-30", "2023-09-30", "2023-12-31",
+                    "2024-03-31", "2024-06-30", "2024-09-30", "2024-12-31",
+                ]),
+            )
+        values = {
+            "DGS3MO": [4.5, 4.6],
+            "DGS6MO": [4.7, 4.8],
+            "DGS1": [4.9, 5.0],
+            "DGS2": [5.1, 5.2],
+            "DGS3": [5.3, 5.4],
+            "DGS5": [5.5, 5.6],
+            "DGS7": [5.7, 5.8],
+            "DGS10": [5.9, 6.0],
+            "DGS20": [6.1, 6.2],
+            "DGS30": [6.3, 6.4],
+        }
+        idx = pd.to_datetime(["2026-09-23", "2026-09-24"])
+        return pd.Series(values[series_id], index=idx)
+
+    monkeypatch.setattr(sources, "fetch_fred", fake_fetch_fred)
+    out_dir = tmp_path / "live"
+    sources.write_treasury_curves(out_dir, date(2023, 1, 2), date(2026, 9, 25))
+    sources.write_macro_series(out_dir, 2023, 2025)
+
+    curves = pd.read_csv(out_dir / "curves.csv")
+    assert curves["as_of_date"].nunique() == 2
+    assert len(curves) == 20
+    assert not curves.duplicated(subset=["as_of_date", "tenor_years"]).any()
+
+    macro = pd.read_csv(out_dir / "macro.csv")
+    assert macro.groupby(["series_id", "period"]).size().max() == 1
 
 
 def test_every_position_valued(pipeline_run):
