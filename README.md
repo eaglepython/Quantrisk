@@ -255,6 +255,8 @@ The project is built to support a realistic daily workflow, but live market data
 
 ## License
 
-MIT licensed.
+Copyright (c) 2026 Garde. All rights reserved.
+
+This project and all associated source code, documentation, and design materials are the exclusive property of Garde. No part of this repository may be reproduced, distributed, or used in any form without prior written permission.
 
 Built for operational risk review, not just demo presentation.
