@@ -9,7 +9,9 @@ __pycache__/
 data/*.db
 data/raw/
 data/curated/
+data/portfolio/
 reports/20*/
+reports/portfolio/
 reports/latest.html
 infra/terraform/aws/.terraform/
 infra/terraform/aws/*.tfstate*

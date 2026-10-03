@@ -15,7 +15,7 @@ import time
 from datetime import date, timedelta
 from pathlib import Path
 
-from quantrisk.config import load_settings
+from quantrisk.config import load_profile_settings, load_settings
 from quantrisk.data import db
 from quantrisk.ingest.dq_rules import DataQualityError
 from quantrisk.logging_setup import setup_logging
@@ -46,6 +46,8 @@ def _publish_to_s3(settings, run_id: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="quantrisk")
     ap.add_argument("--config-dir", default=None)
+    ap.add_argument("--profile", choices=("demo", "portfolio"), default="demo",
+                    help="isolate demo results or approved portfolio-feed results")
     ap.add_argument("--plain-logs", action="store_true", help="human-readable logs instead of JSON")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("init-db")
@@ -57,7 +59,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--as-of", type=_date, required=True)
     p.add_argument("--with-sample", action="store_true", help="generate sample landing files first")
     p.add_argument("--with-real-data", action="store_true",
-                   help="generate live FRED-backed landing files first (requires FRED_API_KEY)")
+                   help="use FRED curves/macros; portfolio profile also requires real portfolio CSVs")
+    p.add_argument("--portfolio-input-dir", type=Path,
+                   help="folder with real instruments, spreads, vols, prices, positions, ledger, and obligors CSVs")
     p.add_argument("--no-report", action="store_true")
     p = sub.add_parser("live")
     p.add_argument("--as-of", type=_date, default=_date("today"))
@@ -77,7 +81,14 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     setup_logging(json_output=not args.plain_logs)
-    settings = load_settings(args.config_dir)
+    settings = (load_settings(args.config_dir) if args.profile == "demo"
+                else load_profile_settings(args.profile, args.config_dir))
+
+    if args.profile == "portfolio" and args.cmd in {"generate-sample", "live", "daily"}:
+        raise SystemExit(
+            f"{args.cmd} is disabled for the portfolio profile until it accepts an explicit approved input feed. "
+            "Use `run --with-real-data --portfolio-input-dir <folder>` so sample holdings cannot enter portfolio results."
+        )
 
     if args.cmd == "init-db":
         if args.ddl:
@@ -87,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
             print("tables created")
         return 0
     if args.cmd == "generate-sample":
+        if args.profile != "demo":
+            raise SystemExit("sample generation is restricted to the demo profile")
         from quantrisk.ingest.sample_data import generate
         out = generate(args.as_of, settings.path("raw"), seed=args.seed)
         print(f"sample landing written to {out}")
@@ -94,12 +107,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "run":
         if args.with_sample and args.with_real_data:
             raise SystemExit("choose only one of --with-sample or --with-real-data")
+        if args.profile == "portfolio" and args.with_sample:
+            raise SystemExit("sample inputs cannot be written into the isolated portfolio profile")
+        if args.profile == "portfolio" and args.with_real_data and not args.portfolio_input_dir:
+            raise SystemExit("portfolio profile requires --portfolio-input-dir; it will not substitute sample holdings or prices")
+        if args.profile == "demo" and args.portfolio_input_dir:
+            raise SystemExit("--portfolio-input-dir requires --profile portfolio")
         if args.with_sample:
             from quantrisk.ingest.sample_data import generate
             generate(args.as_of, settings.path("raw"))
         elif args.with_real_data:
             from quantrisk.ingest.sources import generate_live_landing
-            generate_live_landing(args.as_of, settings.path("raw"))
+            generate_live_landing(
+                args.as_of, settings.path("raw"), portfolio_input_dir=args.portfolio_input_dir,
+            )
         from quantrisk.pipeline import run_daily
         try:
             run_id = run_daily(args.as_of, settings, make_report=not args.no_report)
