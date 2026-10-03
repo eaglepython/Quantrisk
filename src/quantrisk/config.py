@@ -54,7 +54,15 @@ class Settings:
     # convenience accessors
     @property
     def database_url(self) -> str:
-        return str(self.base["database"]["url"])
+        url = str(self.base["database"]["url"])
+        if url.startswith("sqlite:///"):
+            raw_path = url.removeprefix("sqlite:///")
+            if raw_path != ":memory:":
+                path = Path(raw_path)
+                if not path.is_absolute():
+                    path = (self.config_dir.parent / path).resolve()
+                    return f"sqlite:///{path.as_posix()}"
+        return url
 
     @property
     def market(self) -> dict[str, Any]:
@@ -77,7 +85,8 @@ class Settings:
         return dict(self.base["reconciliation"])
 
     def path(self, key: str) -> Path:
-        return Path(self.base["paths"][key])
+        path = Path(self.base["paths"][key])
+        return path if path.is_absolute() else (self.config_dir.parent / path).resolve()
 
 
 def load_settings(config_dir: str | Path | None = None, overrides: dict[str, Any] | None = None) -> Settings:
@@ -91,6 +100,24 @@ def load_settings(config_dir: str | Path | None = None, overrides: dict[str, Any
     digest = hashlib.sha256(json.dumps(docs, sort_keys=True, default=str).encode()).hexdigest()[:16]
     return Settings(base=docs["base"], scenarios=docs["scenarios"], limits=docs["limits"],
                     config_dir=cdir, hash=digest)
+
+
+def load_profile_settings(profile: str, config_dir: str | Path | None = None) -> Settings:
+    """Load isolated demo or portfolio data paths while keeping shared model settings."""
+    if profile == "demo":
+        return load_settings(config_dir)
+    if profile != "portfolio":
+        raise ValueError(f"unknown data profile: {profile}")
+    return load_settings(config_dir, overrides={
+        "database": {"url": os.environ.get(
+            "QR_PORTFOLIO_DATABASE_URL", "sqlite:///data/portfolio/quantrisk.db",
+        )},
+        "paths": {
+            "raw": os.environ.get("QR_PORTFOLIO_RAW_PATH", "data/portfolio/raw"),
+            "curated": os.environ.get("QR_PORTFOLIO_CURATED_PATH", "data/portfolio/curated"),
+            "reports": os.environ.get("QR_PORTFOLIO_REPORTS_PATH", "reports/portfolio"),
+        },
+    })
 
 
 def _deep_update(target: dict[str, Any], upd: dict[str, Any]) -> None:

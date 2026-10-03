@@ -7,6 +7,8 @@ Power BI use). Run with:  streamlit run dashboards/app.py
 from __future__ import annotations
 
 import json
+import os
+from html import escape
 
 import numpy as np
 import pandas as pd
@@ -14,10 +16,25 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from quantrisk.config import load_settings
+from quantrisk.config import load_profile_settings
 from quantrisk.data import db, schema
 
-st.set_page_config(page_title="QuantRisk Live Ops", layout="wide")
+st.set_page_config(page_title="QuantRisk Risk Desk", layout="wide")
+
+# Streamlit Community Cloud exposes configured values through st.secrets, while
+# the shared config loader reads environment variables. Bridge the two without
+# overriding explicit environment settings used in Docker or local runs.
+for _secret_name in (
+    "QR_DATABASE_URL", "QR_PORTFOLIO_DATABASE_URL", "QR_CONFIG_DIR",
+    "QR_PORTFOLIO_RAW_PATH", "QR_PORTFOLIO_CURATED_PATH", "QR_PORTFOLIO_REPORTS_PATH",
+):
+    if not os.environ.get(_secret_name):
+        try:
+            _secret_value = st.secrets.get(_secret_name)
+        except Exception:  # no secrets configured is a normal local setup
+            _secret_value = None
+        if _secret_value:
+            os.environ[_secret_name] = str(_secret_value)
 
 ACCENT, CURVE, BAD, GOOD, SOFT = "#5DA9E9", "#F4B942", "#F05D5E", "#3ED0A3", "#A9C7F2"
 STATUS_COLOR = {"GREEN": GOOD, "AMBER": CURVE, "RED": BAD, "PASS": GOOD, "WATCH": CURVE, "FAIL": BAD,
@@ -118,332 +135,590 @@ st.markdown(
 
 
 @st.cache_resource
-def engine():
-    return db.make_engine(load_settings().database_url)
+def engine(profile: str):
+    return db.make_engine(load_profile_settings(profile).database_url)
 
 
-@st.cache_data(ttl=300)
-def runs() -> pd.DataFrame:
-    return db.read_sql(engine(), "select run_id, as_of_date, status, started_at, git_sha, config_hash "
+@st.cache_data(ttl=30)
+def runs(profile: str) -> pd.DataFrame:
+    return db.read_sql(engine(profile), "select run_id, as_of_date, status, started_at, git_sha, config_hash "
                                  "from risk_run order by started_at desc")
 
 
-@st.cache_data(ttl=300)
-def table(name: str, run_id: str) -> pd.DataFrame:
-    return db.read_df(engine(), schema.metadata.tables[name], run_id=run_id)
+@st.cache_data(ttl=30)
+def table(name: str, run_id: str, profile: str) -> pd.DataFrame:
+    return db.read_df(engine(profile), schema.metadata.tables[name], run_id=run_id)
 
 
-@st.cache_data(ttl=300)
-def summary(run_id: str) -> dict:
-    df = table("run_summary", run_id)
+@st.cache_data(ttl=30)
+def summary(run_id: str, profile: str) -> dict:
+    df = table("run_summary", run_id, profile)
     return {r.key: (r.value_text if isinstance(r.value_text, str) else r.value_num) for r in df.itertuples()}
 
 
-def usd_m(x: float) -> str:
+@st.cache_data(ttl=30)
+def input_sources(as_of_date, profile: str) -> list[str]:
+    rows = db.read_sql(
+        engine(profile),
+        "select source from mkt_curve_point where as_of_date = :as_of "
+        "union select source from mkt_spread where as_of_date = :as_of "
+        "union select source from mkt_vol where as_of_date = :as_of "
+        "union select source from mkt_price where as_of_date = :as_of "
+        "union select source_system as source from pos_position where as_of_date = :as_of",
+        as_of=pd.to_datetime(as_of_date).date(),
+    )
+    return sorted(str(source) for source in rows.source.dropna().unique())
+
+
+def usd_m(x: float | None) -> str:
+    if x is None or not np.isfinite(x):
+        return "n/a"
     return f"{'-' if x < 0 else ''}${abs(x) / 1e6:,.2f}M"
 
 
 def pill(status: str) -> str:
     c = STATUS_COLOR.get(status, "#566476")
-    return f"<span style='background:{c}22;color:{c};padding:2px 8px;border-radius:10px;font-weight:700;font-size:12px'>{status}</span>"
+    return f"<span style='background:{c}22;color:{c};padding:2px 8px;border-radius:10px;font-weight:700;font-size:12px'>{escape(status)}</span>"
 
 
-r = runs()
-if r.empty:
-    st.warning("No runs yet. Run `quantrisk run --as-of YYYY-MM-DD --with-sample` first.")
-    st.stop()
+@st.fragment(run_every="60s")
+def dashboard() -> None:
+    profile_label = st.sidebar.selectbox(
+        "Results set", ["Demo / sample", "Portfolio feeds"], key="results_profile",
+    )
+    profile = "demo" if profile_label == "Demo / sample" else "portfolio"
+    try:
+        r = runs(profile)
+    except Exception as exc:
+        if profile == "portfolio":
+            st.info("The separate portfolio-results database is not initialized yet. Load approved portfolio CSVs, then run the portfolio profile from the CLI.")
+        else:
+            st.error("QuantRisk cannot connect to its configured demo-results database.")
+            st.caption(f"Connection error type: {type(exc).__name__}. Check QR_DATABASE_URL or the Streamlit Cloud secret.")
+        st.stop()
 
-with st.sidebar:
-    st.markdown("<div class='sidebar-title'>QuantRisk</div>", unsafe_allow_html=True)
-    st.caption("Live risk operating system")
-    ok = r[r.status == "SUCCEEDED"]
-    choice = st.selectbox("Run", ok.run_id if len(ok) else r.run_id,
-                          format_func=lambda x: f"{r.set_index('run_id').loc[x, 'as_of_date']}  ({x})")
-    meta = r.set_index("run_id").loc[choice]
-    st.caption(f"Status: {meta.status}  \nGit: {(meta.git_sha or 'n/a')[:10]}  \nConfig: {meta.config_hash}")
-    st.caption("Production mode with live market data and controls.")
+    if r.empty:
+        st.warning("No risk runs are in this database yet.")
+        if profile == "demo":
+            st.code("python -m quantrisk.cli --profile demo run --as-of today --with-sample", language="powershell")
+            st.caption("This creates a synthetic demo run, stored separately from portfolio-feed results.")
+        else:
+            st.code(
+                "python -m quantrisk.cli --profile portfolio run --as-of today "
+                "--with-real-data --portfolio-input-dir C:\\path\\to\\approved-csvs",
+                language="powershell",
+            )
+            st.caption("FRED supplies Treasury curves and macro series. The folder must contain your real portfolio and vendor feeds; no sample substitution is made.")
+        st.stop()
 
-s = summary(choice)
-val = table("position_valuation", choice)
-risk = table("risk_result", choice)
-limits = table("limit_check", choice)
-stress = table("stress_result", choice)
-scen = table("stress_scenario", choice)
+    with st.sidebar:
+        st.markdown("<div class='sidebar-title'>QuantRisk</div>", unsafe_allow_html=True)
+        st.caption("Fixed income risk workspace")
+        if st.button("Refresh latest data", type="primary", width="stretch"):
+            runs.clear()
+            table.clear()
+            summary.clear()
+            input_sources.clear()
+            st.session_state.pop("run_choice", None)
+            st.rerun()
+        ok = r[r.status == "SUCCEEDED"]
+        if ok.empty:
+            st.error("No successful run is available. The latest run did not complete.")
+            st.dataframe(r[["run_id", "as_of_date", "status", "started_at"]], hide_index=True, width="stretch")
+            st.stop()
+        latest_successful_run = ok.run_id.iloc[0]
+        follow_latest = st.toggle("Follow latest successful run", value=True, key="follow_latest")
+        if follow_latest and st.session_state.get("run_choice") != latest_successful_run:
+            st.session_state["run_choice"] = latest_successful_run
+        choice = st.selectbox(
+            "Completed run",
+            ok.run_id,
+            index=0,
+            key="run_choice",
+            format_func=lambda x: f"{r.set_index('run_id').loc[x, 'as_of_date']}  ({x})",
+        )
+        meta = r.set_index("run_id").loc[choice]
+        st.caption(f"Status: {meta.status}  \nRun: {choice[:18]}  \nConfig: {meta.config_hash}")
+        st.caption("View refreshes every minute. A separate pipeline must fetch inputs and calculate each new run.")
 
-st.markdown(
-    f"""
+    s = summary(choice, profile)
+    val = table("position_valuation", choice, profile)
+    risk = table("risk_result", choice, profile)
+    limits = table("limit_check", choice, profile)
+    stress = table("stress_result", choice, profile)
+    scen = table("stress_scenario", choice, profile)
+    sources = input_sources(str(meta.as_of_date), profile)
+    has_sample = any(source.upper().startswith("SAMPLE") for source in sources)
+    source_mode = (
+        "SAMPLE / DEMO" if sources and all(source.upper().startswith("SAMPLE") for source in sources)
+        else "MIXED INPUTS" if has_sample
+        else "EXTERNAL INPUTS" if sources
+        else "SOURCES UNKNOWN"
+    )
+    started = pd.to_datetime(meta.started_at, utc=True).strftime("%Y-%m-%d %H:%M UTC")
+    run_age = pd.Timestamp.now(tz="UTC") - pd.to_datetime(meta.started_at, utc=True)
+
+    status_color = {"SUCCEEDED": GOOD, "RUNNING": ACCENT, "HELD": CURVE, "FAILED": BAD}.get(meta.status, SOFT)
+    st.markdown(
+        f"""
     <div class="hero">
       <div>
-        <div class="hero-badge">Operational dashboard</div>
+        <div class="hero-badge">{escape(source_mode)} · AS OF {escape(str(meta.as_of_date))}</div>
         <h1 style="margin: 0.6rem 0 0.2rem 0; font-size: 2.2rem;">Risk overview, {meta.as_of_date}</h1>
-        <div class="muted">Live fixed-income, market, and credit risk across the production portfolio.</div>
+        <div class="muted">Persisted fixed-income, market, and credit risk results. Last calculated {started}.</div>
       </div>
       <div class="glass" style="min-width: 240px; text-align: left;">
         <div class="muted" style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em;">Run status</div>
-        <div style="margin-top: 0.3rem; font-size: 1.3rem; font-weight: 800; color: {GOOD};">{meta.status}</div>
-        <div class="muted" style="margin-top: 0.25rem;">{choice}</div>
+        <div style="margin-top: 0.3rem; font-size: 1.3rem; font-weight: 800; color: {status_color};">{escape(str(meta.status))}</div>
+        <div class="muted" style="margin-top: 0.25rem;">{escape(str(choice))}</div>
       </div>
     </div>
     """,
-    unsafe_allow_html=True,
-)
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Data sources: " + (", ".join(sources) if sources else "source tags unavailable")
+        + f" · Calculated {run_age / pd.Timedelta(hours=1):.1f} hours ago"
+    )
+    if has_sample:
+        st.warning("This run contains synthetic sample inputs. Treat its risk figures as demonstration output, not live portfolio results.")
+    elif not sources:
+        st.warning("Input provenance could not be established for this run. Confirm its source lineage before relying on the figures.")
+    if run_age >= pd.Timedelta(hours=24):
+        st.warning("The latest selected risk calculation is over 24 hours old. Auto-refresh only reloads saved results; run the pipeline to recalculate risk.")
 
-tot1 = risk[(risk.scope == "TOTAL") & (risk.horizon_days == 1) & (risk.method == "historical")]
-var99 = float(tot1[(tot1.metric == "VaR") & np.isclose(tot1.confidence, 0.99)].value.iloc[0])
-es975 = float(tot1[(tot1.metric == "ES") & np.isclose(tot1.confidence, 0.975)].value.iloc[0])
-by_scen = stress.groupby("scenario_id").total_pnl.sum()
-el = table("credit_grade_summary", choice).groupby("scenario_id").expected_loss.sum()
+    tot1 = risk[(risk.scope == "TOTAL") & (risk.horizon_days == 1) & (risk.method == "historical")]
+    var_rows = tot1[(tot1.metric == "VaR") & np.isclose(tot1.confidence, 0.99)]
+    es_rows = tot1[(tot1.metric == "ES") & np.isclose(tot1.confidence, 0.975)]
+    var99 = float(var_rows.value.iloc[0]) if not var_rows.empty else None
+    es975 = float(es_rows.value.iloc[0]) if not es_rows.empty else None
+    by_scen = stress.groupby("scenario_id").total_pnl.sum()
+    credit_summary = table("credit_grade_summary", choice, profile)
+    el = credit_summary.groupby("scenario_id").expected_loss.sum() if not credit_summary.empty else pd.Series(dtype=float)
 
-st.markdown('<div class="glass">', unsafe_allow_html=True)
-col = st.columns(6)
-col[0].metric("Market value", usd_m(s["total_market_value"]))
-col[1].metric("DV01 / bp", f"${s['total_dv01']:,.0f}")
-col[2].metric("VaR 99% 1d", usd_m(var99))
-col[3].metric("ES 97.5% 1d", usd_m(es975))
-col[4].metric("Worst stress", usd_m(by_scen.min()))
-col[5].metric("EL severe", usd_m(float(el.get("SEVERE", 0))))
-st.markdown('</div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        col = st.columns(6)
+        col[0].metric("Market value", usd_m(s["total_market_value"]))
+        col[1].metric("DV01 / bp", f"${s['total_dv01']:,.0f}")
+        col[2].metric("VaR 99% 1d", usd_m(var99))
+        col[3].metric("ES 97.5% 1d", usd_m(es975))
+        col[4].metric("Worst stress", usd_m(by_scen.min()))
+        col[5].metric("EL severe", usd_m(float(el.get("SEVERE", 0))))
 
-book_mv = val.groupby("book_id").market_value.sum().reset_index().sort_values("market_value", ascending=False)
-book_fig = px.pie(book_mv, names="book_id", values="market_value", hole=0.45,
-                  color_discrete_sequence=[ACCENT, CURVE, GOOD, SOFT, BAD])
-book_fig.update_traces(textinfo="label+percent")
-book_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False, height=280)
+    book_mv = val.groupby("book_id").market_value.sum().reset_index().sort_values("market_value", ascending=False)
+    book_fig = px.pie(book_mv, names="book_id", values="market_value", hole=0.45,
+                      color_discrete_sequence=[ACCENT, CURVE, GOOD, SOFT, BAD])
+    book_fig.update_traces(textinfo="label+percent")
+    book_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False, height=280)
 
-stress_rank = stress.groupby("scenario_id").total_pnl.sum().sort_values().reset_index()
-stress_fig = px.bar(stress_rank, x="scenario_id", y="total_pnl",
-                   color="total_pnl", color_continuous_scale="RdBu_r")
-stress_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=280, xaxis_title="Scenario", yaxis_title="P&L")
+    stress_rank = stress.groupby("scenario_id").total_pnl.sum().sort_values().reset_index()
+    stress_fig = px.bar(stress_rank, x="scenario_id", y="total_pnl",
+                       color="total_pnl", color_continuous_scale="RdBu_r")
+    stress_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=280, xaxis_title="Scenario", yaxis_title="P&L")
 
-risk_by_metric = risk[(risk.scope == "TOTAL") & (risk.horizon_days == 1) & (risk.method == "historical")]
-risk_metric_fig = px.bar(risk_by_metric[risk_by_metric.metric.isin(["VaR", "ES"])],
-                        x="metric", y="value", color="confidence",
-                        barmode="group", color_discrete_sequence=[ACCENT, CURVE])
-risk_metric_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=280,
-                              xaxis_title="Metric", yaxis_title="$ value")
+    risk_by_metric = risk[(risk.scope == "TOTAL") & (risk.horizon_days == 1) & (risk.method == "historical")]
+    risk_metric_fig = px.bar(risk_by_metric[risk_by_metric.metric.isin(["VaR", "ES"])],
+                            x="metric", y="value", color="confidence",
+                            barmode="group", color_discrete_sequence=[ACCENT, CURVE])
+    risk_metric_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=280,
+                                  xaxis_title="Metric", yaxis_title="$ value")
 
-st.markdown("<div class='glass' style='margin-top: 1rem; margin-bottom: 1rem;'>", unsafe_allow_html=True)
-st.markdown("<div class='muted' style='font-size:0.72rem; text-transform:uppercase; letter-spacing:0.08em;'>Executive quick sense</div>", unsafe_allow_html=True)
+    st.markdown("### Executive quick sense")
 
-dq = db.read_df(engine(), schema.dq_check_result, run_id=choice)
-failed_dq = dq[dq.status == "FAIL"]
-if not failed_dq.empty:
-    st.warning(f"Data quality alerts: {', '.join(failed_dq.check_name.head(4).tolist())}")
-else:
-    st.success("Data quality is clean; no failing checks on the last production run.")
+    dq = db.read_df(engine(profile), schema.dq_check_result, run_id=choice)
+    failed_dq = dq[dq.status == "FAIL"]
+    if not failed_dq.empty:
+        st.warning(f"Data quality alerts: {', '.join(failed_dq.check_name.head(4).tolist())}")
+    else:
+        st.success("Data quality is clean; no failing checks were recorded for this run.")
 
-limit_alerts = limits[limits.status.isin(["AMBER", "RED"])].copy()
-if not limit_alerts.empty:
-    st.markdown(f"<div style='margin-top:0.75rem; padding:0.8rem 1rem; border-radius:14px; background:rgba(240,93,94,0.08); border:1px solid rgba(240,93,94,0.25); color:#ffd7d7;'>⚠️ {len(limit_alerts)} limit watch items: {', '.join(limit_alerts.limit_id.tolist())}</div>", unsafe_allow_html=True)
+    limit_alerts = limits[limits.status.isin(["AMBER", "RED"])].copy()
+    if not limit_alerts.empty:
+        st.markdown(f"<div style='margin-top:0.75rem; padding:0.8rem 1rem; border-radius:14px; background:rgba(240,93,94,0.08); border:1px solid rgba(240,93,94,0.25); color:#ffd7d7;'>⚠️ {len(limit_alerts)} limit watch items: {', '.join(limit_alerts.limit_id.tolist())}</div>", unsafe_allow_html=True)
 
-col_a, col_b, col_c = st.columns(3)
-col_a.plotly_chart(book_fig, use_container_width=True)
-col_b.plotly_chart(risk_metric_fig, use_container_width=True)
-col_c.plotly_chart(stress_fig, use_container_width=True)
+    col_a, col_b, col_c = st.columns(3)
+    col_a.plotly_chart(book_fig, width="stretch")
+    col_b.plotly_chart(risk_metric_fig, width="stretch")
+    col_c.plotly_chart(stress_fig, width="stretch")
 
-ref_instr = db.read_df(engine(), schema.ref_instrument)
-sector_breakdown = None
-if "sector" in ref_instr.columns:
-    sector_breakdown = val.merge(ref_instr[["instrument_id", "sector"]], on="instrument_id", how="left").groupby("sector").market_value.sum().reset_index()
-elif "asset_class" in ref_instr.columns:
-    sector_breakdown = val.merge(ref_instr[["instrument_id", "asset_class"]], on="instrument_id", how="left").groupby("asset_class").market_value.sum().reset_index()
-if sector_breakdown is not None and not sector_breakdown.empty:
-    sector_fig = px.treemap(sector_breakdown, path=[sector_breakdown.columns[0]], values="market_value",
-                           color="market_value", color_continuous_scale="Blues")
-    sector_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300)
-else:
-    sector_fig = px.bar(book_mv, x="book_id", y="market_value", color="market_value",
-                        color_continuous_scale="Tealgrn")
-    sector_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300)
+    ref_instr = db.read_df(engine(profile), schema.ref_instrument)
+    sector_breakdown = None
+    if "sector" in ref_instr.columns:
+        sector_breakdown = val.merge(ref_instr[["instrument_id", "sector"]], on="instrument_id", how="left").groupby("sector").market_value.sum().reset_index()
+    elif "asset_class" in ref_instr.columns:
+        sector_breakdown = val.merge(ref_instr[["instrument_id", "asset_class"]], on="instrument_id", how="left").groupby("asset_class").market_value.sum().reset_index()
+    if sector_breakdown is not None and not sector_breakdown.empty:
+        sector_fig = px.treemap(sector_breakdown, path=[sector_breakdown.columns[0]], values="market_value",
+                               color="market_value", color_continuous_scale="Blues")
+        sector_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300)
+    else:
+        sector_fig = px.bar(book_mv, x="book_id", y="market_value", color="market_value",
+                            color_continuous_scale="Tealgrn")
+        sector_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300)
 
-par_map = {float(k): float(v) for k, v in json.loads(s["curve_par"]).items()} if s.get("curve_par") else {}
-zero_map = {float(k): float(v) for k, v in json.loads(s["curve_zero"]).items()} if s.get("curve_zero") else {}
-short_y = par_map.get(2.0, 0.0)
-long_y = par_map.get(10.0, 0.0)
-curve_slope_bp = (long_y - short_y) * 10_000 if short_y and long_y else 0.0
-curve_slope_fig = go.Figure()
-curve_slope_fig.add_bar(x=["2Y", "10Y"], y=[short_y * 100, long_y * 100], marker_color=[ACCENT, CURVE])
-curve_slope_fig.update_layout(title="Curve level monitor", margin=dict(t=35, b=10, l=10, r=10), height=220,
-                             xaxis_title="Point", yaxis_title="Yield %")
+    par_map = {float(k): float(v) for k, v in json.loads(s["curve_par"]).items()} if s.get("curve_par") else {}
+    short_y = par_map.get(2.0, 0.0)
+    long_y = par_map.get(10.0, 0.0)
+    curve_slope_bp = (long_y - short_y) * 10_000 if short_y and long_y else 0.0
+    curve_slope_fig = go.Figure()
+    curve_slope_fig.add_bar(x=["2Y", "10Y"], y=[short_y * 100, long_y * 100], marker_color=[ACCENT, CURVE])
+    curve_slope_fig.update_layout(title="Curve level monitor", margin=dict(t=35, b=10, l=10, r=10), height=220,
+                                 xaxis_title="Point", yaxis_title="Yield %")
 
-risk_method = risk[(risk.scope == "TOTAL") & (risk.horizon_days == 1) & (risk.metric.isin(["VaR", "ES"]))]
-method_fig = px.bar(risk_method, x="method", y="value", color="metric", barmode="group",
-                    color_discrete_map={"VaR": ACCENT, "ES": BAD})
-method_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=260,
-                         xaxis_title="Method", yaxis_title="$ value")
+    risk_method = risk[(risk.scope == "TOTAL") & (risk.horizon_days == 1) & (risk.metric.isin(["VaR", "ES"]))]
+    method_fig = px.bar(risk_method, x="method", y="value", color="metric", barmode="group",
+                        color_discrete_map={"VaR": ACCENT, "ES": BAD})
+    method_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=260,
+                             xaxis_title="Method", yaxis_title="$ value")
 
-col_d, col_e, col_f = st.columns(3)
-col_d.plotly_chart(sector_fig, use_container_width=True)
-col_e.plotly_chart(curve_slope_fig, use_container_width=True)
-col_f.plotly_chart(method_fig, use_container_width=True)
+    col_d, col_e, col_f = st.columns(3)
+    col_d.plotly_chart(sector_fig, width="stretch")
+    col_e.plotly_chart(curve_slope_fig, width="stretch")
+    col_f.plotly_chart(method_fig, width="stretch")
 
-worst_scenario = stress_rank.loc[stress_rank["total_pnl"].idxmin(), "scenario_id"]
-worst_value = stress_rank["total_pnl"].min()
-largest_book = book_mv.loc[book_mv["market_value"].idxmax(), "book_id"]
-var_row = risk[(risk.scope == "TOTAL") & (risk.horizon_days == 1) & (risk.metric == "VaR") & np.isclose(risk.confidence, 0.99)]
-var_value = float(var_row.value.iloc[0]) if not var_row.empty else 0.0
+    worst_scenario = stress_rank.loc[stress_rank["total_pnl"].idxmin(), "scenario_id"]
+    worst_value = stress_rank["total_pnl"].min()
+    largest_book = book_mv.loc[book_mv["market_value"].idxmax(), "book_id"]
+    var_row = risk[(risk.scope == "TOTAL") & (risk.horizon_days == 1) & (risk.metric == "VaR") & np.isclose(risk.confidence, 0.99)]
+    var_value = float(var_row.value.iloc[0]) if not var_row.empty else 0.0
 
-narrative = (
-    f"The portfolio is currently led by {largest_book}. "
-    f"The sharpest risk drag is {worst_scenario}, which is producing a {usd_m(worst_value)} loss under the current stress path. "
-    f"One-day VaR at 99% is {usd_m(var_value)}, and the 2Y-10Y curve slope is {curve_slope_bp:.1f} bp, which indicates a {('steepening' if curve_slope_bp > 25 else 'stable or flattening')} rate structure. "
-    f"The dominant exposures remain in the {largest_book} book, with the most acute sensitivity in the rate and spread buckets."
-)
-st.markdown(
-    f"""
-    <div class='glass' style='margin-bottom: 1rem; padding: 1rem 1.1rem;'>
-      <div class='muted' style='font-size:0.72rem; text-transform:uppercase; letter-spacing:0.08em;'>Risk narrative</div>
-      <p style='margin:0.7rem 0 0; line-height:1.5;'>{narrative}</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+    narrative = (
+        f"The portfolio is currently led by {largest_book}. "
+        f"The sharpest risk drag is {worst_scenario}, which is producing a {usd_m(worst_value)} loss under the current stress path. "
+        f"One-day VaR at 99% is {usd_m(var_value)}, and the 2Y-10Y curve slope is {curve_slope_bp:.1f} bp, which indicates a {('steepening' if curve_slope_bp > 25 else 'stable or flattening')} rate structure. "
+        f"The dominant exposures remain in the {largest_book} book, with the most acute sensitivity in the rate and spread buckets."
+    )
+    st.markdown(
+        f"""
+        <div class='glass' style='margin-bottom: 1rem; padding: 1rem 1.1rem;'>
+          <div class='muted' style='font-size:0.72rem; text-transform:uppercase; letter-spacing:0.08em;'>Risk narrative</div>
+          <p style='margin:0.7rem 0 0; line-height:1.5;'>{narrative}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-status_strip = []
-status_strip.append(("Data quality", "OK" if failed_dq.empty else "ALERT", GOOD if failed_dq.empty else BAD))
-status_strip.append(("Limits", "GREEN" if limit_alerts.empty else ("AMBER" if limit_alerts.status.eq("AMBER").any() else "RED"), GOOD if limit_alerts.empty else (CURVE if limit_alerts.status.eq("AMBER").any() else BAD)))
-status_strip.append(("Curve", "STABLE" if abs(curve_slope_bp) < 30 else ("STEEP" if curve_slope_bp > 0 else "FLAT"), GOOD if abs(curve_slope_bp) < 30 else CURVE))
-status_strip.append(("VaR", "NORMAL" if var_value < s.get("total_market_value", 0) * 0.02 else "ELEVATED", GOOD if var_value < s.get("total_market_value", 0) * 0.02 else CURVE))
+    status_strip = []
+    status_strip.append(("Data quality", "OK" if failed_dq.empty else "ALERT", GOOD if failed_dq.empty else BAD))
+    status_strip.append(("Limits", "GREEN" if limit_alerts.empty else ("AMBER" if limit_alerts.status.eq("AMBER").any() else "RED"), GOOD if limit_alerts.empty else (CURVE if limit_alerts.status.eq("AMBER").any() else BAD)))
+    status_strip.append(("Curve", "STABLE" if abs(curve_slope_bp) < 30 else ("STEEP" if curve_slope_bp > 0 else "FLAT"), GOOD if abs(curve_slope_bp) < 30 else CURVE))
+    status_strip.append(("VaR", "NORMAL" if var_value < s.get("total_market_value", 0) * 0.02 else "ELEVATED", GOOD if var_value < s.get("total_market_value", 0) * 0.02 else CURVE))
 
-strip_cols = st.columns(len(status_strip))
-for idx, (label, value, color) in enumerate(status_strip):
-    with strip_cols[idx]:
-        st.markdown(
-            f"""
-            <div style='background: rgba(8,16,26,0.9); border:1px solid {color}55; border-radius:12px; padding:0.65rem 0.8rem; margin-bottom:0.5rem; min-height:88px;'>
-              <div style='font-size:0.7rem; text-transform:uppercase; letter-spacing:0.08em; color:{color};'>{label}</div>
-              <div style='font-size:1.35rem; font-weight:800; margin-top:0.45rem; color:#edf4ff;'>{value}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+    strip_cols = st.columns(len(status_strip))
+    for idx, (label, value, color) in enumerate(status_strip):
+        with strip_cols[idx]:
+            st.markdown(
+                f"""
+                <div style='background: rgba(8,16,26,0.9); border:1px solid {color}55; border-radius:12px; padding:0.65rem 0.8rem; margin-bottom:0.5rem; min-height:88px;'>
+                  <div style='font-size:0.7rem; text-transform:uppercase; letter-spacing:0.08em; color:{color};'>{label}</div>
+                  <div style='font-size:1.35rem; font-weight:800; margin-top:0.45rem; color:#edf4ff;'>{value}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    heat_df = val.merge(ref_instr[["instrument_id", "sector"]], on="instrument_id", how="left") if "sector" in ref_instr.columns else val.merge(ref_instr[["instrument_id", "asset_class"]], on="instrument_id", how="left")
+    heat_key = "sector" if "sector" in heat_df.columns else "asset_class"
+    heat_df["duration_bucket"] = pd.cut(
+        heat_df["mod_duration"].fillna(0),
+        bins=[-1, 2, 5, 10, 100],
+        labels=["<2Y", "2-5Y", "5-10Y", ">10Y"],
+        right=False,
+    )
+    heat = heat_df.groupby([heat_key, "duration_bucket"], as_index=False)["market_value"].sum().fillna(0)
+    heat_piv = heat.pivot(index=heat_key, columns="duration_bucket", values="market_value").fillna(0)
+    heat_fig = px.imshow(heat_piv, text_auto=True, color_continuous_scale="Blues", aspect="auto")
+    heat_fig.update_layout(title="Exposure heatmap by sector / duration", height=280, margin=dict(t=30, l=10, r=10, b=10))
+
+    st.plotly_chart(heat_fig, width="stretch")
+
+    st.markdown(
+        f"""
+        <div class='glass' style='margin-bottom: 1rem; padding: 0.8rem 1rem;'>
+          <div style='display:flex; gap:1rem; flex-wrap:wrap;'>
+            <div><strong>Quick read:</strong> largest exposure is <span style='color:{ACCENT};'>{largest_book}</span>.</div>
+            <div><strong>Risk drag:</strong> worst stress is <span style='color:{BAD};'>{worst_scenario}</span> at {usd_m(worst_value)}.</div>
+            <div><strong>Current VaR:</strong> {usd_m(var_value)} at 99% / 1D.</div>
+            <div><strong>2Y-10Y slope:</strong> {curve_slope_bp:.1f} bp.</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    tabs = st.tabs(["Portfolio review", "Limits", "Curve & positions", "VaR / ES", "Stress", "Credit", "Data quality", "Governance"])
+
+    with tabs[0]:
+        st.markdown("#### 1 · Define the mandate")
+        saved_mandate = st.session_state.get("review_mandate", {})
+        with st.form("portfolio_review_mandate"):
+            mandate_name = st.text_input("Portfolio / client mandate", value=saved_mandate.get("name", ""))
+            mandate_cols = st.columns(2)
+            benchmark = mandate_cols[0].text_input("Benchmark", value=saved_mandate.get("benchmark", ""))
+            horizon = mandate_cols[1].selectbox(
+                "Investment horizon",
+                ["Short term", "1–3 years", "3–7 years", "7+ years", "Custom"],
+                index=["Short term", "1–3 years", "3–7 years", "7+ years", "Custom"].index(saved_mandate.get("horizon", "3–7 years")),
+            )
+            duration_cols = st.columns(2)
+            duration_min = duration_cols[0].number_input(
+                "Duration floor (years)", min_value=0.0, max_value=50.0,
+                value=float(saved_mandate.get("duration_min", 0.0)), step=0.5,
+            )
+            duration_max = duration_cols[1].number_input(
+                "Duration ceiling (years)", min_value=0.0, max_value=50.0,
+                value=float(saved_mandate.get("duration_max", 15.0)), step=0.5,
+            )
+            min_rating = st.selectbox(
+                "Minimum credit rating", ["AAA", "AA", "A", "BBB", "BB", "B", "CCC / below", "Mandate specific"],
+                index=["AAA", "AA", "A", "BBB", "BB", "B", "CCC / below", "Mandate specific"].index(saved_mandate.get("min_rating", "BBB")),
+            )
+            liquidity = st.text_area("Liquidity requirements", value=saved_mandate.get("liquidity", ""), height=70)
+            constraints = st.text_area(
+                "Other constraints / concentration limits", value=saved_mandate.get("constraints", ""), height=70,
+            )
+            mandate_saved = st.form_submit_button("Save mandate for this review", type="primary")
+
+        if mandate_saved:
+            if duration_min > duration_max:
+                st.error("Duration floor must be less than or equal to the duration ceiling.")
+            else:
+                st.session_state["review_mandate"] = {
+                    "name": mandate_name, "benchmark": benchmark, "horizon": horizon,
+                    "duration_min": duration_min, "duration_max": duration_max,
+                    "min_rating": min_rating, "liquidity": liquidity, "constraints": constraints,
+                }
+                saved_mandate = st.session_state["review_mandate"]
+                st.success("Mandate saved for this browser session.")
+
+        st.markdown("#### 2 · Confirm the data is suitable")
+        st.caption(f"Selected run: {choice} · as of {meta.as_of_date} · calculated {run_age / pd.Timedelta(hours=1):.1f} hours ago")
+        st.caption("Sources: " + (", ".join(sources) if sources else "Unknown"))
+        verified_inputs = st.checkbox(
+            "I independently verified the holdings, as-of date, and approved source lineage for this review.",
+            key="review_inputs_verified",
+        )
+        gate_reasons = []
+        if has_sample:
+            gate_reasons.append("synthetic sample inputs")
+        if not sources:
+            gate_reasons.append("source lineage is unknown")
+        if not verified_inputs:
+            gate_reasons.append("reviewer has not independently verified inputs")
+        if run_age >= pd.Timedelta(hours=24):
+            gate_reasons.append("calculation is over 24 hours old")
+        if not failed_dq.empty:
+            gate_reasons.append("data-quality checks failed")
+        if not limit_alerts.empty:
+            gate_reasons.append("limit alerts require review")
+        review_state = "DEMONSTRATION ONLY" if has_sample else "DATA REVIEW REQUIRED" if gate_reasons else "HUMAN REVIEW REQUIRED"
+        if gate_reasons:
+            st.warning(f"{review_state}: " + "; ".join(gate_reasons) + ". Do not use this run to make portfolio decisions.")
+        else:
+            st.info("Inputs have no automatic demo/staleness/data-quality blocker. A qualified reviewer still must approve the analysis.")
+
+        st.markdown("#### 3 · Review the portfolio risk picture")
+        review_kpis = st.columns(4)
+        review_kpis[0].metric("Market value", usd_m(s.get("total_market_value")))
+        review_kpis[1].metric("DV01 / bp", f"${float(s.get('total_dv01') or 0):,.0f}")
+        review_kpis[2].metric("Historical VaR · 99% / 1d", usd_m(var_value))
+        review_kpis[3].metric("Worst stress", usd_m(stress_rank.total_pnl.min() if not stress_rank.empty else None))
+        review_cols = st.columns(2)
+        with review_cols[0]:
+            st.markdown("**Limit checks**")
+            st.dataframe(
+                limits[["limit_id", "value", "amber", "red", "utilization", "status"]],
+                hide_index=True, width="stretch",
+            )
+        with review_cols[1]:
+            st.markdown("**Largest stress losses**")
+            st.dataframe(
+                stress_rank.head(5).rename(columns={"scenario_id": "scenario", "total_pnl": "P&L"}),
+                hide_index=True, width="stretch",
+            )
+        if not failed_dq.empty:
+            st.markdown("**Data-quality exceptions**")
+            st.dataframe(failed_dq[["check_name", "severity", "status"]], hide_index=True, width="stretch")
+
+        st.markdown("#### 4 · Compare a second completed run")
+        alternate_runs = ok[ok.run_id != choice]
+        alternate_id = None
+        if alternate_runs.empty:
+            st.info("A comparison needs another successful saved run. Feed an alternate approved portfolio through the pipeline, then select it here.")
+        else:
+            alternate_id = st.selectbox(
+                "Alternative / baseline run", alternate_runs.run_id.tolist(),
+                format_func=lambda x: f"{r.set_index('run_id').loc[x, 'as_of_date']}  ({x})",
+                key="review_alternate_run",
+            )
+            alternate_meta = r.set_index("run_id").loc[alternate_id]
+            alternate_summary = summary(alternate_id, profile)
+            alternate_risk = table("risk_result", alternate_id, profile)
+            alternate_stress = table("stress_result", alternate_id, profile)
+            alt_var_rows = alternate_risk[
+                (alternate_risk.scope == "TOTAL") & (alternate_risk.horizon_days == 1)
+                & (alternate_risk.method == "historical") & (alternate_risk.metric == "VaR")
+                & np.isclose(alternate_risk.confidence, 0.99)
+            ]
+            alt_var = float(alt_var_rows.value.iloc[0]) if not alt_var_rows.empty else np.nan
+            base_worst = float(stress_rank.total_pnl.min()) if not stress_rank.empty else np.nan
+            alt_worst = float(alternate_stress.groupby("scenario_id").total_pnl.sum().min()) if not alternate_stress.empty else np.nan
+            same_setup = (
+                alternate_meta.as_of_date == meta.as_of_date
+                and alternate_meta.config_hash == meta.config_hash
+            )
+            if same_setup:
+                st.success("Runs share the same as-of date and config hash. Confirm the holdings and source inputs before treating this as a like-for-like comparison.")
+            else:
+                st.warning("Runs have different dates or config hashes; differences may reflect changed inputs or assumptions, not only portfolio design.")
+            comparison = pd.DataFrame(
+                [
+                    ("Market value", s.get("total_market_value"), alternate_summary.get("total_market_value")),
+                    ("DV01 / bp", s.get("total_dv01"), alternate_summary.get("total_dv01")),
+                    ("Historical VaR · 99% / 1d", var_value, alt_var),
+                    ("Worst stress P&L", base_worst, alt_worst),
+                ], columns=["Measure", "Selected run", "Comparison run"],
+            )
+            comparison["Change (comparison − selected)"] = comparison["Comparison run"] - comparison["Selected run"]
+            st.dataframe(comparison, hide_index=True, width="stretch")
+
+        st.markdown("#### 5 · Record the human review")
+        st.caption("This note is a draft record for your team; it is not a trade recommendation or an approval.")
+        reviewer = st.text_input("Reviewer / team", key="review_reviewer")
+        proposed_action = st.selectbox(
+            "Review outcome", ["Continue analysis", "No change proposed", "Propose adjustment for approval", "Escalate for review"],
+            key="review_action",
+        )
+        rationale = st.text_area("Rationale, open questions, and required approvals", key="review_rationale", height=120)
+        mandate_lines = [
+            f"- Portfolio / mandate: {saved_mandate.get('name', '') or 'Not recorded'}",
+            f"- Benchmark: {saved_mandate.get('benchmark', '') or 'Not recorded'}",
+            f"- Horizon: {saved_mandate.get('horizon', 'Not recorded')}",
+            f"- Duration range: {saved_mandate.get('duration_min', 'n/a')}–{saved_mandate.get('duration_max', 'n/a')} years",
+            f"- Minimum rating: {saved_mandate.get('min_rating', 'Not recorded')}",
+            f"- Liquidity: {saved_mandate.get('liquidity', '') or 'Not recorded'}",
+            f"- Other constraints: {saved_mandate.get('constraints', '') or 'Not recorded'}",
+        ]
+        memo = "\n".join([
+            "# QuantRisk portfolio review draft", "", f"- Review state: **{review_state}**",
+            f"- Reviewer: {reviewer or 'Not recorded'}", f"- Run: {choice}",
+            f"- As of: {meta.as_of_date}", f"- Calculated: {started}",
+            f"- Input sources: {', '.join(sources) if sources else 'Unknown'}",
+            f"- Independently verified inputs: {'Yes' if verified_inputs else 'No'}", "",
+            "## Mandate", *mandate_lines, "", "## Current risk snapshot",
+            f"- Market value: {usd_m(s.get('total_market_value'))}",
+            f"- DV01 / bp: ${float(s.get('total_dv01') or 0):,.0f}",
+            f"- Historical VaR 99% / 1d: {usd_m(var_value)}",
+            f"- Worst stress P&L: {usd_m(stress_rank.total_pnl.min() if not stress_rank.empty else None)}",
+            f"- Failed data-quality checks: {', '.join(failed_dq.check_name.astype(str)) if not failed_dq.empty else 'None recorded'}",
+            f"- Limit alerts: {', '.join(limit_alerts.limit_id.astype(str)) if not limit_alerts.empty else 'None recorded'}", "",
+            "## Comparison", f"- Comparison run: {alternate_id or 'Not selected'}", "",
+            "## Human review", f"- Outcome: {proposed_action}",
+            f"- Rationale / approvals: {rationale or 'Not recorded'}", "",
+            "This is a draft review aid. It is not an investment recommendation, trade instruction, or compliance determination.",
+        ])
+        st.download_button(
+            "Download review note (.md)", memo,
+            file_name=f"portfolio-review-{meta.as_of_date}-{str(choice)[:18]}.md",
+            mime="text/markdown", width="stretch",
         )
 
-heat_df = val.merge(ref_instr[["instrument_id", "sector"]], on="instrument_id", how="left") if "sector" in ref_instr.columns else val.merge(ref_instr[["instrument_id", "asset_class"]], on="instrument_id", how="left")
-heat_key = "sector" if "sector" in heat_df.columns else "asset_class"
-heat_df["duration_bucket"] = pd.cut(
-    heat_df["mod_duration"].fillna(0),
-    bins=[-1, 2, 5, 10, 100],
-    labels=["<2Y", "2-5Y", "5-10Y", ">10Y"],
-    right=False,
-)
-heat = heat_df.groupby([heat_key, "duration_bucket"], as_index=False)["market_value"].sum().fillna(0)
-heat_piv = heat.pivot(index=heat_key, columns="duration_bucket", values="market_value").fillna(0)
-heat_fig = px.imshow(heat_piv, text_auto=True, color_continuous_scale="Blues", aspect="auto")
-heat_fig.update_layout(title="Exposure heatmap by sector / duration", height=280, margin=dict(t=30, l=10, r=10, b=10))
+    with tabs[1]:
+        lim = limits.copy()
+        lim["utilization %"] = (lim.utilization * 100).round(0)
+        lim["value"] = lim.value.round(3)
+        fig = px.bar(lim.sort_values("utilization"), x="utilization %", y="limit_id", orientation="h", color="status",
+                     color_discrete_map=STATUS_COLOR, range_x=[0, max(110, lim["utilization %"].max() + 10)])
+        fig.add_vline(x=100, line_dash="dash", line_color=BAD)
+        fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), yaxis_title=None)
+        st.plotly_chart(fig, width="stretch")
+        st.dataframe(lim[["limit_id", "description", "value", "amber", "red", "utilization %", "status"]],
+                     hide_index=True, width="stretch")
 
-st.plotly_chart(heat_fig, use_container_width=True)
+    with tabs[2]:
+        par = json.loads(s["curve_par"])
+        zero = json.loads(s["curve_zero"])
+        fig = go.Figure()
+        fig.add_scatter(x=list(par), y=[v * 100 for v in par.values()], name="Par", line=dict(color=CURVE, width=3))
+        fig.add_scatter(x=list(zero), y=[v * 100 for v in zero.values()], name="Zero", line=dict(color=ACCENT))
+        fig.update_layout(height=320, xaxis_title="tenor (years)", yaxis_title="%", margin=dict(t=10))
+        left, right = st.columns([1, 1])
+        left.plotly_chart(fig, width="stretch")
+        krd = table("krd_result", choice, profile)
+        kf = krd.groupby(["tenor_years", "book_id"]).dv01.sum().reset_index()
+        kf["tenor"] = kf.tenor_years.map(lambda t: f"{t:g}Y")
+        right.plotly_chart(px.bar(kf, x="tenor", y="dv01", color="book_id", title="Key-rate DV01",
+                                  color_discrete_sequence=[ACCENT, CURVE]).update_layout(height=320), width="stretch")
+        st.dataframe(val[["book_id", "instrument_id", "face_amount", "clean_price", "vendor_price", "market_value", "ytm",
+                          "mod_duration", "eff_duration", "convexity", "spread_duration", "dv01"]].round(4),
+                     hide_index=True, width="stretch")
 
-st.markdown(
-    f"""
-    <div class='glass' style='margin-bottom: 1rem; padding: 0.8rem 1rem;'>
-      <div style='display:flex; gap:1rem; flex-wrap:wrap;'>
-        <div><strong>Quick read:</strong> largest exposure is <span style='color:{ACCENT};'>{largest_book}</span>.</div>
-        <div><strong>Risk drag:</strong> worst stress is <span style='color:{BAD};'>{worst_scenario}</span> at {usd_m(worst_value)}.</div>
-        <div><strong>Current VaR:</strong> {usd_m(var_value)} at 99% / 1D.</div>
-        <div><strong>2Y-10Y slope:</strong> {curve_slope_bp:.1f} bp.</div>
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+    with tabs[3]:
+        h = st.radio("Horizon (days)", sorted(risk.horizon_days.unique()), horizontal=True)
+        t = risk[(risk.scope == "TOTAL") & (risk.horizon_days == h)]
+        piv = t.pivot_table(index=["confidence", "metric"], columns="method", values="value").round(0)
+        st.dataframe(piv, width="stretch")
+        pnl = table("pnl_vector", choice, profile).sort_values("scenario_date")
+        look = int(s.get("lookback_days", 500))
+        fig = px.histogram(pnl.tail(look), x="pnl", nbins=50, color_discrete_sequence=[SOFT])
+        fig.add_vline(x=-var99, line_color="black", annotation_text="VaR 99%")
+        fig.update_layout(height=320, margin=dict(t=30))
+        a, b = st.columns(2)
+        a.plotly_chart(fig, width="stretch")
+        btr = table("backtest_result", choice, profile).sort_values("test_date")
+        fig2 = go.Figure()
+        fig2.add_bar(x=btr.test_date, y=btr.pnl, name="P&L", marker_color=SOFT)
+        fig2.add_scatter(x=btr.test_date, y=-btr.var_99, name="-VaR 99%", line=dict(color="black"))
+        ex = btr[btr.exception == 1]
+        fig2.add_scatter(x=ex.test_date, y=ex.pnl, mode="markers", name="Exception", marker=dict(color=BAD, size=9))
+        fig2.update_layout(height=320, margin=dict(t=30), title=f"Backtest: {int(s['bt_exceptions'])} exceptions, {s['bt_zone']}")
+        b.plotly_chart(fig2, width="stretch")
 
-st.markdown('</div>', unsafe_allow_html=True)
+    with tabs[4]:
+        agg = stress.groupby("scenario_id")[["rates_pnl", "spread_pnl", "vol_pnl", "total_pnl"]].sum()
+        agg = agg.join(scen.set_index("scenario_id")[["name", "description"]]).sort_values("total_pnl")
+        fig = go.Figure()
+        for col, color, nm in (("rates_pnl", ACCENT, "Rates"), ("spread_pnl", CURVE, "Spread"), ("vol_pnl", SOFT, "Vol")):
+            fig.add_bar(y=agg.name, x=agg[col], name=nm, orientation="h", marker_color=color)
+        fig.update_layout(barmode="relative", height=440, margin=dict(t=10))
+        st.plotly_chart(fig, width="stretch")
+        pick = st.selectbox("Drill into scenario", agg.index, format_func=lambda x: agg.loc[x, "name"])
+        st.caption(agg.loc[pick, "description"])
+        st.dataframe(stress[stress.scenario_id == pick].drop(columns=["run_id", "scenario_hash"]).sort_values("total_pnl").round(0),
+                     hide_index=True, width="stretch")
 
-tabs = st.tabs(["Limits", "Curve & positions", "VaR / ES", "Stress", "Credit", "Data quality", "Governance"])
+    with tabs[5]:
+        gs = table("credit_grade_summary", choice, profile)
+        order = list(load_profile_settings(profile).credit["master_scale"])
+        gs["order"] = gs.grade.map({g: i for i, g in enumerate(order)})
+        gs = gs.sort_values(["order", "scenario_id"])
+        st.plotly_chart(px.bar(gs, x="grade", y="expected_loss", color="scenario_id", barmode="group",
+                               color_discrete_map={"BASELINE": ACCENT, "ADVERSE": CURVE, "SEVERE": BAD}).update_layout(height=340),
+                        width="stretch")
+        m = st.columns(4)
+        m[0].metric("OOT AUC", f"{s['pd_auc_oot']:.3f}")
+        m[1].metric("OOT Gini", f"{s['pd_gini_oot']:.3f}")
+        m[2].metric("PSI", f"{s['pd_psi']:.3f}")
+        m[3].metric("Satellite R²", f"{s['sat_r2']:.2f}")
+        st.dataframe(table("credit_calibration", choice, profile).drop(columns="run_id"), hide_index=True, width="stretch")
 
-with tabs[0]:
-    lim = limits.copy()
-    lim["utilization %"] = (lim.utilization * 100).round(0)
-    lim["value"] = lim.value.round(3)
-    fig = px.bar(lim.sort_values("utilization"), x="utilization %", y="limit_id", orientation="h", color="status",
-                 color_discrete_map=STATUS_COLOR, range_x=[0, max(110, lim["utilization %"].max() + 10)])
-    fig.add_vline(x=100, line_dash="dash", line_color=BAD)
-    fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), yaxis_title=None)
-    st.plotly_chart(fig, use_container_width=True)
-    st.dataframe(lim[["limit_id", "description", "value", "amber", "red", "utilization %", "status"]],
-                 hide_index=True, use_container_width=True)
+    with tabs[6]:
+        dq = db.read_df(engine(profile), schema.dq_check_result, run_id=choice)
+        recon = db.read_df(engine(profile), schema.recon_log, run_id=choice)
+        a, b = st.columns(2)
+        a.markdown("#### Data-quality checks")
+        a.dataframe(dq.drop(columns="run_id").sort_values(["status", "severity"]), hide_index=True, width="stretch")
+        b.markdown("#### Reconciliation log")
+        b.dataframe(recon.drop(columns=["run_id", "recon_id"]).sort_values("status"), hide_index=True, width="stretch")
 
-with tabs[1]:
-    par = json.loads(s["curve_par"])
-    zero = json.loads(s["curve_zero"])
-    fig = go.Figure()
-    fig.add_scatter(x=list(par), y=[v * 100 for v in par.values()], name="Par", line=dict(color=CURVE, width=3))
-    fig.add_scatter(x=list(zero), y=[v * 100 for v in zero.values()], name="Zero", line=dict(color=ACCENT))
-    fig.update_layout(height=320, xaxis_title="tenor (years)", yaxis_title="%", margin=dict(t=10))
-    left, right = st.columns([1, 1])
-    left.plotly_chart(fig, use_container_width=True)
-    krd = table("krd_result", choice)
-    kf = krd.groupby(["tenor_years", "book_id"]).dv01.sum().reset_index()
-    kf["tenor"] = kf.tenor_years.map(lambda t: f"{t:g}Y")
-    right.plotly_chart(px.bar(kf, x="tenor", y="dv01", color="book_id", title="Key-rate DV01",
-                              color_discrete_sequence=[ACCENT, CURVE]).update_layout(height=320), use_container_width=True)
-    st.dataframe(val[["book_id", "instrument_id", "face_amount", "clean_price", "vendor_price", "market_value", "ytm",
-                      "mod_duration", "eff_duration", "convexity", "spread_duration", "dv01"]].round(4),
-                 hide_index=True, use_container_width=True)
+    with tabs[7]:
+        mv = table("model_validation", choice, profile)
+        st.markdown(" ".join(f"{pill(k)} {v}" for k, v in mv.status.value_counts().items()), unsafe_allow_html=True)
+        st.dataframe(mv.drop(columns="run_id"), hide_index=True, width="stretch")
+        secs = {k.removeprefix("seconds_"): v for k, v in s.items() if k.startswith("seconds_")}
+        if secs:
+            st.markdown("#### Batch step timings (seconds)")
+            st.bar_chart(pd.Series(secs))
 
-with tabs[2]:
-    h = st.radio("Horizon (days)", sorted(risk.horizon_days.unique()), horizontal=True)
-    t = risk[(risk.scope == "TOTAL") & (risk.horizon_days == h)]
-    piv = t.pivot_table(index=["confidence", "metric"], columns="method", values="value").round(0)
-    st.dataframe(piv, use_container_width=True)
-    pnl = table("pnl_vector", choice).sort_values("scenario_date")
-    look = int(s.get("lookback_days", 500))
-    fig = px.histogram(pnl.tail(look), x="pnl", nbins=50, color_discrete_sequence=[SOFT])
-    fig.add_vline(x=-var99, line_color="black", annotation_text="VaR 99%")
-    fig.update_layout(height=320, margin=dict(t=30))
-    a, b = st.columns(2)
-    a.plotly_chart(fig, use_container_width=True)
-    btr = table("backtest_result", choice).sort_values("test_date")
-    fig2 = go.Figure()
-    fig2.add_bar(x=btr.test_date, y=btr.pnl, name="P&L", marker_color=SOFT)
-    fig2.add_scatter(x=btr.test_date, y=-btr.var_99, name="-VaR 99%", line=dict(color="black"))
-    ex = btr[btr.exception == 1]
-    fig2.add_scatter(x=ex.test_date, y=ex.pnl, mode="markers", name="Exception", marker=dict(color=BAD, size=9))
-    fig2.update_layout(height=320, margin=dict(t=30), title=f"Backtest: {int(s['bt_exceptions'])} exceptions, {s['bt_zone']}")
-    b.plotly_chart(fig2, use_container_width=True)
 
-with tabs[3]:
-    agg = stress.groupby("scenario_id")[["rates_pnl", "spread_pnl", "vol_pnl", "total_pnl"]].sum()
-    agg = agg.join(scen.set_index("scenario_id")[["name", "description"]]).sort_values("total_pnl")
-    fig = go.Figure()
-    for col, color, nm in (("rates_pnl", ACCENT, "Rates"), ("spread_pnl", CURVE, "Spread"), ("vol_pnl", SOFT, "Vol")):
-        fig.add_bar(y=agg.name, x=agg[col], name=nm, orientation="h", marker_color=color)
-    fig.update_layout(barmode="relative", height=440, margin=dict(t=10))
-    st.plotly_chart(fig, use_container_width=True)
-    pick = st.selectbox("Drill into scenario", agg.index, format_func=lambda x: agg.loc[x, "name"])
-    st.caption(agg.loc[pick, "description"])
-    st.dataframe(stress[stress.scenario_id == pick].drop(columns=["run_id", "scenario_hash"]).sort_values("total_pnl").round(0),
-                 hide_index=True, use_container_width=True)
-
-with tabs[4]:
-    gs = table("credit_grade_summary", choice)
-    order = list(load_settings().credit["master_scale"])
-    gs["order"] = gs.grade.map({g: i for i, g in enumerate(order)})
-    gs = gs.sort_values(["order", "scenario_id"])
-    st.plotly_chart(px.bar(gs, x="grade", y="expected_loss", color="scenario_id", barmode="group",
-                           color_discrete_map={"BASELINE": ACCENT, "ADVERSE": CURVE, "SEVERE": BAD}).update_layout(height=340),
-                    use_container_width=True)
-    m = st.columns(4)
-    m[0].metric("OOT AUC", f"{s['pd_auc_oot']:.3f}")
-    m[1].metric("OOT Gini", f"{s['pd_gini_oot']:.3f}")
-    m[2].metric("PSI", f"{s['pd_psi']:.3f}")
-    m[3].metric("Satellite R²", f"{s['sat_r2']:.2f}")
-    st.dataframe(table("credit_calibration", choice).drop(columns="run_id"), hide_index=True, use_container_width=True)
-
-with tabs[5]:
-    dq = db.read_df(engine(), schema.dq_check_result, run_id=choice)
-    recon = db.read_df(engine(), schema.recon_log, run_id=choice)
-    a, b = st.columns(2)
-    a.markdown("#### Data-quality checks")
-    a.dataframe(dq.drop(columns="run_id").sort_values(["status", "severity"]), hide_index=True, use_container_width=True)
-    b.markdown("#### Reconciliation log")
-    b.dataframe(recon.drop(columns=["run_id", "recon_id"]).sort_values("status"), hide_index=True, use_container_width=True)
-
-with tabs[6]:
-    mv = table("model_validation", choice)
-    st.markdown(" ".join(f"{pill(k)} {v}" for k, v in mv.status.value_counts().items()), unsafe_allow_html=True)
-    st.dataframe(mv.drop(columns="run_id"), hide_index=True, use_container_width=True)
-    secs = {k.removeprefix("seconds_"): v for k, v in s.items() if k.startswith("seconds_")}
-    if secs:
-        st.markdown("#### Batch step timings (seconds)")
-        st.bar_chart(pd.Series(secs))
+dashboard()

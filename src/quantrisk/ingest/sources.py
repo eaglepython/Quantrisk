@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 import urllib.parse
 import urllib.request
@@ -101,13 +102,30 @@ def write_macro_series(out_dir: Path, start_year: int, end_year: int) -> Path:
 
 
 def generate_live_landing(as_of: date, out_dir: str | Path, seed: int = 7,
-                         history_start: date = date(2023, 1, 2)) -> Path:
-    """Generate a raw landing folder using live FRED curves and macro inputs; keep the rest as sample data."""
+                         history_start: date = date(2023, 1, 2),
+                         portfolio_input_dir: str | Path | None = None) -> Path:
+    """Combine FRED curves/macros with supplied portfolio feeds, or sample data for demo use."""
     base_dir = Path(out_dir)
     live_dir = base_dir / as_of.isoformat()
     live_dir.mkdir(parents=True, exist_ok=True)
 
-    sample_data.generate(as_of, base_dir, seed=seed, history_start=history_start)
+    if portfolio_input_dir is None:
+        sample_data.generate(as_of, base_dir, seed=seed, history_start=history_start)
+    else:
+        source_dir = Path(portfolio_input_dir)
+        dated_source = source_dir / as_of.isoformat()
+        if dated_source.is_dir():
+            source_dir = dated_source
+        required_feeds = ("instruments", "spreads", "vols", "prices", "positions", "ledger", "obligors")
+        missing = [name for name in required_feeds if not (source_dir / f"{name}.csv").is_file()]
+        if missing:
+            raise FileNotFoundError(
+                f"portfolio input folder {source_dir} is missing required CSV files: "
+                + ", ".join(f"{name}.csv" for name in missing)
+            )
+        for name in required_feeds:
+            shutil.copy2(source_dir / f"{name}.csv", live_dir / f"{name}.csv")
+
     write_treasury_curves(live_dir, history_start, as_of)
     write_macro_series(live_dir, history_start.year, as_of.year)
     return live_dir

@@ -5,7 +5,7 @@
 </div>
 
 <p align="center">
-  <strong>Operational fixed-income, market-risk, and credit-risk analytics for a live daily risk process.</strong>
+  <strong>An interactive fixed-income and credit-risk analytics prototype for portfolio risk review.</strong>
 </p>
 
 <p align="center">
@@ -15,15 +15,15 @@
   <img alt="AI" src="https://img.shields.io/badge/Ollama-Local%20AI-5A67D8" />
 </p>
 
-QuantRisk is designed to behave like a real treasury or risk operating desk: it ingests market data, validates it, prices bonds, measures exposure, runs stress and credit scenarios, checks limits, and publishes a risk report the same way a daily production workflow would.
+QuantRisk is a Python analytics application with a batch calculation pipeline, persisted run results, an HTML report, and a Streamlit dashboard. The repository includes sample inputs for exploration and a limited FRED connector for Treasury curve and macro data. The sample path is not live portfolio data, and the FRED connector does not replace an asset manager's market-data, holdings, or pricing feeds.
 
-Every result is tied back to its code version, config hash, and input data lineage so the process remains reviewable and auditable.
+The dashboard reads completed results from a database. It refreshes its view every minute and can follow newly completed runs, but a separate scheduled process must ingest inputs and calculate those runs. It is not a continuous market-data feed or a validated production risk service.
 
 ---
 
 ## Why it matters
 
-This is not a demo. It is a business-facing risk operating system for a modern finance team.
+The first intended users are asset-management portfolio risk teams reviewing fixed-income exposures. The current code is an early product foundation that needs validation against real holdings, pricing, benchmarks, policies, and independent expected results before it can support investment or control decisions.
 
 The real value is in how it translates market moves into decisions:
 
@@ -45,7 +45,7 @@ In other words, the system helps a risk desk answer the questions that matter ev
 
 ## What the dashboard is built to do
 
-The dashboard is meant to look and behave like a real risk command center.
+The dashboard supports review of saved portfolio-risk calculations.
 
 It helps a user quickly see:
 
@@ -55,27 +55,23 @@ It helps a user quickly see:
 - credit loss outlook under adverse conditions
 - governance state, validation results and limit utilization
 - operational data freshness and health checks
+- a guided portfolio-review tab to capture a mandate, inspect readiness and risk checks, compare saved runs, and export a human-review draft
 
 This combines analytics, controls, and monitoring into a single operational surface.
 
 ---
 
-## Why this exists
+## Current data behavior
 
-A risk platform is only useful when it is operational, not just demonstrative.
-
-QuantRisk combines four things that matter in production:
-
-- live market inputs and portfolio data
-- deterministic risk calculations
-- automated governance and limits
-- a fast review layer with dashboard and report outputs
-
-This is the same pattern used in a daily risk-control workflow: validate, price, measure, stress, govern, and summarize.
+- `--with-sample` creates synthetic portfolio and market inputs for a repeatable demonstration.
+- Demo and portfolio results use separate databases, landing folders, and report folders. The dashboard sidebar switches between `Demo / sample` and `Portfolio feeds`.
+- A portfolio-profile run uses FRED for Treasury curves and macro series and requires real portfolio/vendor CSVs for the remaining feeds. It does not fill missing feeds with generated samples.
+- The dashboard displays persisted results. It does not start a batch job or poll a market-data vendor.
+- A shared deployment needs a continuously available database and separate input-ingestion and risk-run scheduling. Netlify static hosting cannot run the Streamlit Python server.
 
 ---
 
-## Live operational workflow
+## Example calculation workflow
 
 ```mermaid
 flowchart LR
@@ -109,39 +105,63 @@ flowchart LR
 
 ---
 
-## Executive summary
+## Intended first pilot
 
-QuantRisk is a full-stack risk platform designed for daily operational use across a fixed-income and credit portfolio.
-
-It gives a finance team the ability to:
-
-- ingest and validate market data every business day
-- run deterministic risk calculations on a real portfolio
-- assess losses under stressed scenarios
-- monitor governance and limit utilization
-- generate an audit-friendly HTML report
-- review the situation in a clear dashboard interface
-- add private AI guidance from a local model
-
-This is the practical foundation for a real production risk workflow rather than a static proof of concept.
+Work with one asset manager's fixed-income risk team to validate an end-of-day workflow: ingest an agreed holdings and market-data snapshot, reconcile positions and valuation, review DV01/VaR/stress results against its existing controls, and compare outputs to its incumbent process. Define tolerances and sign-off owners before use in decision-making. No performance or risk-control improvement is claimed until measured with that team.
 
 ---
 
 ## Quick start
 
-```bash
-pip install -e ".[dev,dashboard]"
-quantrisk --plain-logs run --as-of 2026-09-25 --with-sample
+```powershell
+cd C:\Users\garde\Desktop\quantrisk
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dashboard]"
+python -m quantrisk.cli --profile demo run --as-of today --with-sample
+python -m streamlit run dashboards/app.py
+```
+
+### Run the interactive dashboard
+
+Run these commands from the repository root in PowerShell. A relative `.venv` path fails if the terminal is still in `C:\Users\garde`:
+
+```powershell
+cd C:\Users\garde\Desktop\quantrisk
+.\.venv\Scripts\Activate.ps1
 streamlit run dashboards/app.py
 ```
 
-### Daily production run
+Open the local URL printed by Streamlit (usually `http://localhost:8501`). If `.venv` does not exist, run the environment creation and install commands in Quick start. If PowerShell blocks activation, use `Set-ExecutionPolicy -Scope Process Bypass` for that terminal, then activate. The dashboard reads saved runs from `QR_DATABASE_URL`; the default is `data/quantrisk.db`. To add a run while the app is open, run the CLI command in a second terminal. With “Follow latest successful run” enabled, the dashboard displays it after its next refresh.
+
+### Host the interactive app
+
+The dashboard is a Python Streamlit server, so it must run on a Streamlit or container hosting service; Netlify static hosting cannot run this app. For Streamlit Community Cloud, create an app from this repository, choose branch `main` and entry point `dashboards/app.py`, then provide `QR_DATABASE_URL` in the app's Secrets settings. The local SQLite database and raw files are not included in Git, so a cloud deployment needs a database reachable from the app and a separate scheduled risk run that writes to it. Do not place real portfolio data in the public repository.
+
+### Data and scheduled runs
+
+The sample command above writes synthetic results only to the demo profile. To calculate a separate portfolio result, set `FRED_API_KEY`, place the seven approved CSV feeds below in a folder, then run:
 
 ```powershell
-# PowerShell
-$env:FRED_API_KEY = "your_fred_api_key"
-python -m quantrisk.cli daily --as-of 2026-09-25 --no-ai
+python -m quantrisk.cli --profile portfolio run --as-of today `
+  --with-real-data --portfolio-input-dir C:\path\to\approved-csvs
 ```
+
+Required files and columns (additional vendor columns are allowed):
+
+| File | Required columns |
+|---|---|
+| `instruments.csv` | `instrument_id, asset_class, coupon, issue_date, maturity_date, frequency, day_count` |
+| `spreads.csv` | `spread_index, as_of_date, spread_bp, source` |
+| `vols.csv` | `vol_index, as_of_date, normal_vol_bp, source` |
+| `prices.csv` | `instrument_id, as_of_date, source, clean_price, price_date` |
+| `positions.csv` | `book_id, instrument_id, as_of_date, face_amount, source_system` |
+| `ledger.csv` | `book_id, instrument_id, as_of_date, face_amount, market_value` |
+| `obligors.csv` | `obligor_id, year, leverage, interest_coverage, roa, current_ratio, log_assets` |
+
+The selected `--as-of` date must be covered by the portfolio feeds. Historical prices and market factors should cover the desired VaR and backtest lookbacks; a single-day extract cannot support a meaningful historical risk history. The process fetches FRED inputs into the isolated portfolio landing folder, then validates and calculates the run. It requires network access to FRED and a configured API key. No vendor feed or real portfolio files are included in this repository.
+
+For continuous viewing across users, host Streamlit and a shared database; for continuous updating, schedule ingestion and calculation separately. The portfolio `live`/`daily` shortcuts are disabled until they accept an explicit approved input feed, to prevent sample holdings from entering the portfolio results set.
 
 ### Local AI summary
 
@@ -151,7 +171,7 @@ ollama pull llama3.2
 quantrisk ai --prompt "Summarize the daily risk posture in plain English."
 ```
 
-> For a real daily production workflow, use:
+> For a future controlled pilot, configure:
 > - FRED API key for live curve/macro inputs
 > - Ollama local model for AI summary
 > - Windows Task Scheduler or a scheduled job to trigger run_daily.ps1
@@ -164,7 +184,7 @@ quantrisk ai --prompt "Summarize the daily risk posture in plain English."
 |---|---|
 | ![Risk report](docs/img/report.png) | ![Dashboard](docs/img/dashboard.png) |
 
-This gives you both an audit-grade report and a live operational review layer in one system.
+The screenshots show interface examples; they are not evidence of live connected data or production validation.
 
 ---
 
@@ -249,7 +269,7 @@ infra/                     cloud deployment scaffolding
 
 ## Production notes
 
-The project is built to support a realistic daily workflow, but live market data still depends on external inputs such as a FRED API key. The same operational logic works equally well on a local workstation, a VM, or a scheduled production environment.
+QuantRisk is an early-stage prototype. Production readiness still requires real and licensed portfolio data integrations, deployment and access controls, monitoring and alert delivery, recovery procedures, independent model validation, reconciliation against an incumbent system, and an agreed asset-manager pilot.
 
 ---
 
@@ -259,4 +279,4 @@ Copyright (c) 2026 Garde. All rights reserved.
 
 This project and all associated source code, documentation, and design materials are the exclusive property of Garde. No part of this repository may be reproduced, distributed, or used in any form without prior written permission.
 
-Built for operational risk review, not just demo presentation.
+Built as a starting point for validated portfolio-risk workflows.
