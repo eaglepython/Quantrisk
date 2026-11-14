@@ -1,9 +1,14 @@
 name: Daily risk run
 
 # Adds a new business-day run so a hosted dashboard rolls forward on its own.
+#
 # Requires a persistent database: set the QR_DATABASE_URL repository secret to a
 # Postgres URL (e.g. a free Neon/Supabase database) that the Streamlit app also
 # reads. Without that secret this job is a no-op, so it never fails a fork.
+#
+# Optional real market data: set the FRED_API_KEY secret (free from
+# fred.stlouisfed.org) to pull real Treasury curves and macro series. The demo
+# portfolio (holdings, spreads, prices, obligors) stays synthetic either way.
 
 on:
   schedule:
@@ -23,11 +28,18 @@ jobs:
       - name: Run the daily batch
         env:
           QR_DATABASE_URL: ${{ secrets.QR_DATABASE_URL }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: |
           if [ -z "${QR_DATABASE_URL}" ]; then
             echo "QR_DATABASE_URL secret is not set."
             echo "Add a persistent Postgres URL as the QR_DATABASE_URL secret to enable continuous daily updates."
             exit 0
           fi
-          python -m quantrisk.cli run --as-of today --with-sample --no-report
+          if [ -n "${FRED_API_KEY}" ]; then
+            echo "FRED key present: using real Treasury curves and macro series."
+            python -m quantrisk.cli run --as-of today --with-real-data --no-report
+          else
+            echo "No FRED key: using synthetic sample data."
+            python -m quantrisk.cli run --as-of today --with-sample --no-report
+          fi
           echo "Daily run complete for $(date -u +%Y-%m-%d)."

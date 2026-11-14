@@ -74,14 +74,23 @@ def _seed() -> None:
     except Exception:
         existing = set()
 
+    # With a FRED key the Treasury curves and macro series are real; the demo
+    # portfolio (holdings, spreads, prices, obligors) stays synthetic either way.
+    use_real = bool(os.environ.get("FRED_API_KEY"))
+    mode = "--with-real-data" if use_real else "--with-sample"
+
     for d in _recent_business_days(BACKFILL_DAYS):
         if d.isoformat() in existing:
             continue
         try:
-            cli_main(["run", "--as-of", d.isoformat(), "--with-sample", "--no-report"])
+            cli_main(["run", "--as-of", d.isoformat(), mode, "--no-report"])
         except Exception:
-            # One bad day should not stop the dashboard from opening.
-            pass
+            # One bad day (or FRED hiccup) should not stop the dashboard from opening.
+            if use_real:
+                try:
+                    cli_main(["run", "--as-of", d.isoformat(), "--with-sample", "--no-report"])
+                except Exception:
+                    pass
 
 
 # A per-container marker avoids re-seeding on every Streamlit rerun, while a new
