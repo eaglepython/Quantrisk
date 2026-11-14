@@ -1,0 +1,5 @@
+# Netlify serves the pre-built static showcase in site/.
+# The interactive Streamlit dashboard is hosted separately (see site/index.html).
+[build]
+  publish = "site"
+  command = ""
