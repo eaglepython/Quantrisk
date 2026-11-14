@@ -15,3 +15,5 @@ reports/portfolio/
 reports/latest.html
 infra/terraform/aws/.terraform/
 infra/terraform/aws/*.tfstate*
+quantrisk_netlify_site.zip
+data/.demo_seeded
