@@ -13,28 +13,49 @@ from pathlib import Path
 # Default to a local SQLite database unless the host sets one explicitly.
 os.environ.setdefault("QR_DATABASE_URL", "sqlite:///data/quantrisk.db")
 
-_SEED_MARKER = Path("data/.demo_seeded")
+
+def _ensure_sqlite_dir(database_url: str) -> None:
+    """A fresh clone has no data/ folder, so SQLite cannot create the file.
+    Create the parent directory of the SQLite path before any DDL runs."""
+    if database_url.startswith("sqlite:///"):
+        raw = database_url.removeprefix("sqlite:///")
+        if raw and raw != ":memory:":
+            Path(raw).parent.mkdir(parents=True, exist_ok=True)
 
 
 def _seed_once() -> None:
-    if _SEED_MARKER.exists():
-        return
     from quantrisk.cli import main as cli_main
     from quantrisk.config import load_profile_settings
     from quantrisk.data import db
 
-    engine = db.make_engine(load_profile_settings("demo").database_url)
+    settings = load_profile_settings("demo")
+    _ensure_sqlite_dir(settings.database_url)
+
+    # Writable working directories for the pipeline's landing/curated output.
+    for key in ("raw", "curated"):
+        try:
+            settings.path(key).mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+    marker = Path("data/.demo_seeded")
+    if marker.exists():
+        return
+
+    engine = db.make_engine(settings.database_url)
     db.init_db(engine)
+
     already = False
     try:
-        rows = db.read_sql(engine, "select count(*) as n from runs where status = 'SUCCEEDED'")
+        rows = db.read_sql(engine, "select count(*) as n from risk_run where status = 'SUCCEEDED'")
         already = int(rows.iloc[0]["n"]) > 0
     except Exception:
         already = False
     if not already:
         cli_main(["run", "--as-of", "2025-09-26", "--with-sample", "--no-report"])
-    _SEED_MARKER.parent.mkdir(parents=True, exist_ok=True)
-    _SEED_MARKER.write_text("seeded\n")
+
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("seeded\n")
 
 
 _seed_once()
