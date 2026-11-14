@@ -1,0 +1,33 @@
+name: Daily risk run
+
+# Adds a new business-day run so a hosted dashboard rolls forward on its own.
+# Requires a persistent database: set the QR_DATABASE_URL repository secret to a
+# Postgres URL (e.g. a free Neon/Supabase database) that the Streamlit app also
+# reads. Without that secret this job is a no-op, so it never fails a fork.
+
+on:
+  schedule:
+    - cron: "30 11 * * 1-5"   # weekdays, ~11:30 UTC
+  workflow_dispatch: {}
+
+jobs:
+  daily-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e .
+      - name: Run the daily batch
+        env:
+          QR_DATABASE_URL: ${{ secrets.QR_DATABASE_URL }}
+        run: |
+          if [ -z "${QR_DATABASE_URL}" ]; then
+            echo "QR_DATABASE_URL secret is not set."
+            echo "Add a persistent Postgres URL as the QR_DATABASE_URL secret to enable continuous daily updates."
+            exit 0
+          fi
+          python -m quantrisk.cli run --as-of today --with-sample --no-report
+          echo "Daily run complete for $(date -u +%Y-%m-%d)."
